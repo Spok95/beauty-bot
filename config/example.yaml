@@ -10,7 +10,7 @@ http:
   addr: ":8080"
 
 postgres:
-  dsn: "postgres://app:app@localhost:5432/app?sslmode=disable"
+  dsn: "postgres://app:app@127.0.0.1:5432/app?sslmode=disable"
 
 metrics:
   enabled: true

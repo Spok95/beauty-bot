@@ -4,6 +4,7 @@ go 1.25.3
 
 require (
 	github.com/jackc/pgx/v5 v5.7.6
+	github.com/lib/pq v1.10.9
 	github.com/pressly/goose/v3 v3.26.0
 	github.com/prometheus/client_golang v1.23.2
 	github.com/spf13/viper v1.21.0

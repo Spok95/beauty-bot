@@ -12,12 +12,12 @@ import (
 	httpx "github.com/Spok95/beauty-bot/internal/infra/http"
 	"github.com/Spok95/beauty-bot/internal/infra/logger"
 
-	_ "github.com/jackc/pgx/v5/stdlib" // регистрирует драйвер "pgx" для database/sql в goose
+	_ "github.com/lib/pq"
 	"github.com/pressly/goose/v3"
 )
 
 func runMigrations(dsn string, log *slog.Logger) error {
-	sqlDB, err := goose.OpenDBWithDriver("pgx", dsn)
+	sqlDB, err := goose.OpenDBWithDriver("postgres", dsn)
 	if err != nil {
 		return err
 	}
@@ -26,21 +26,20 @@ func runMigrations(dsn string, log *slog.Logger) error {
 }
 
 func main() {
-	// 1) конфиг и логгер
 	cfg, err := config.Load("config/example.yaml")
 	if err != nil {
 		panic(err)
 	}
-	log := logger.New(cfg.App.Env)
 
-	// 2) миграции
+	log := logger.New(cfg.App.Env)
+	log.Info("using DSN", "dsn", cfg.Postgres.DSN)
+
 	if err := runMigrations(cfg.Postgres.DSN, log); err != nil {
 		log.Error("migrations failed", "err", err)
 		return
 	}
 	log.Info("migrations applied")
 
-	// 3) коннект к БД (pgxpool)
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
@@ -52,7 +51,6 @@ func main() {
 	defer pool.Close()
 	log.Info("db connected")
 
-	// 4) HTTP /health + /metrics
 	srv := httpx.New(cfg.HTTP.Addr, cfg.Metrics.Enabled)
 	go func() {
 		if err := srv.Start(); err != nil && err.Error() != "http: Server closed" {
@@ -61,7 +59,6 @@ func main() {
 	}()
 	log.Info("HTTP server started", "addr", cfg.HTTP.Addr)
 
-	// 5) graceful shutdown
 	<-ctx.Done()
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
