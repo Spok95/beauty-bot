@@ -1,0 +1,16 @@
+app:
+  env: "dev"
+  timezone: "Europe/Moscow"
+
+telegram:
+  token: "PUT_TELEGRAM_TOKEN_HERE"
+  admin_chat_id: 0
+
+http:
+  addr: ":8080"
+
+postgres:
+  dsn: "postgres://app:app@localhost:5432/app?sslmode=disable"
+
+metrics:
+  enabled: true
