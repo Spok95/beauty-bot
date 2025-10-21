@@ -3,15 +3,15 @@ app:
   timezone: "Europe/Moscow"
 
 telegram:
-  token: "${TELEGRAM_TOKEN}"   # подхватит из окружения
-  admin_chat_id: 0             # при желании укажем позже
+  token: "${TELEGRAM_TOKEN}"
+  admin_chat_id: 1041899019
   request_timeout_sec: 30
 
 http:
   addr: ":8080"
 
 postgres:
-  dsn: "postgres://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable"
+  dsn: "postgres://postgres:postgres@127.0.0.1:5433/postgres?sslmode=disable"
 
 metrics:
   enabled: true

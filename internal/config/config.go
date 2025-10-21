@@ -40,6 +40,7 @@ func Load(path string) (Config, error) {
 	v.AutomaticEnv()
 	// Разрешаем также голое TELEGRAM_TOKEN без префикса APP_
 	_ = v.BindEnv("telegram.token", "TELEGRAM_TOKEN")
+	_ = v.BindEnv("telegram.admin_chat_id", "TELEGRAM_ADMIN_CHAT_ID")
 	// Дефолты
 	v.SetDefault("telegram.request_timeout_sec", 30)
 

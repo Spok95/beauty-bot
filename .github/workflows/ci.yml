@@ -1,0 +1,27 @@
+name: CI
+on: [push, pull_request]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24.4"   # или go-version-file: go.mod
+          check-latest: true
+
+      - name: Install golangci-lint (build with current Go)
+        run: go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.62.2
+
+      - name: Lint
+        run: golangci-lint run --timeout=3m
+
+      - name: Build
+        run: go build ./...
+
+      - name: Test
+        run: go test ./...
+
+
