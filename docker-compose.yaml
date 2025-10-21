@@ -2,10 +2,12 @@ services:
   postgres:
     image: postgres:17
     environment:
-      POSTGRES_USER: app
-      POSTGRES_PASSWORD: app
-      POSTGRES_DB: app
-    ports: ["5432:5432"]
-    volumes: [ "pgdata:/var/lib/postgresql/data" ]
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
 volumes:
   pgdata:

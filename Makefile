@@ -15,3 +15,7 @@ test:
 
 migrate-up:
 	@echo "migrations later"
+
+migrate-up:   goose -dir ./migrations -v postgres "$$DB_DSN" up
+migrate-down: goose -dir ./migrations -v postgres "$$DB_DSN" down
+migrate-status: goose -dir ./migrations -v postgres "$$DB_DSN" status
