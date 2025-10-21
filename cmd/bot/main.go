@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"log/slog"
 	"os/signal"
 	"syscall"
@@ -12,16 +13,19 @@ import (
 	httpx "github.com/Spok95/beauty-bot/internal/infra/http"
 	"github.com/Spok95/beauty-bot/internal/infra/logger"
 
-	_ "github.com/lib/pq"
+	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/pressly/goose/v3"
 )
 
 func runMigrations(dsn string, log *slog.Logger) error {
-	sqlDB, err := goose.OpenDBWithDriver("postgres", dsn)
+	// Открываем sql.DB через драйвер "pgx" (а не "postgres")
+	sqlDB, err := sql.Open("pgx", dsn)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = sqlDB.Close() }()
+
+	// goose просто использует уже готовое подключение:
 	return goose.Up(sqlDB, "migrations")
 }
 
@@ -32,7 +36,6 @@ func main() {
 	}
 
 	log := logger.New(cfg.App.Env)
-	log.Info("using DSN", "dsn", cfg.Postgres.DSN)
 
 	if err := runMigrations(cfg.Postgres.DSN, log); err != nil {
 		log.Error("migrations failed", "err", err)
