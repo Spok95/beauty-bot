@@ -10,9 +10,11 @@ import (
 
 	"github.com/Spok95/beauty-bot/internal/bot"
 	"github.com/Spok95/beauty-bot/internal/config"
+	"github.com/Spok95/beauty-bot/internal/domain/users"
 	"github.com/Spok95/beauty-bot/internal/infra/db"
 	httpx "github.com/Spok95/beauty-bot/internal/infra/http"
 	"github.com/Spok95/beauty-bot/internal/infra/logger"
+	"github.com/subosito/gotenv"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/pressly/goose/v3"
@@ -31,6 +33,10 @@ func runMigrations(dsn string, log *slog.Logger) error {
 }
 
 func main() {
+	// Загружаем переменные окружения из .env (если файл есть).
+	_ = gotenv.Load(".env.local") // необязательно; удобно для локальных переопределений
+	_ = gotenv.Load()             // подхватит .env
+
 	cfg, err := config.Load("config/example.yaml")
 	if err != nil {
 		panic(err)
@@ -55,6 +61,8 @@ func main() {
 	defer pool.Close()
 	log.Info("db connected")
 
+	usersRepo := users.NewRepo(pool)
+
 	srv := httpx.New(cfg.HTTP.Addr, cfg.Metrics.Enabled)
 	go func() {
 		if err := srv.Start(); err != nil && err.Error() != "http: Server closed" {
@@ -66,8 +74,9 @@ func main() {
 	botCfg := bot.Config{
 		Token:      cfg.Telegram.Token,
 		TimeoutSec: cfg.Telegram.RequestTimeoutSec,
+		AdminID:    cfg.Telegram.AdminChatID,
 	}
-	tg, err := bot.New(botCfg, log)
+	tg, err := bot.New(botCfg, log, usersRepo)
 	if err != nil {
 		log.Error("telegram init failed", "err", err)
 		return
