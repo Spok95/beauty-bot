@@ -3,8 +3,9 @@ app:
   timezone: "Europe/Moscow"
 
 telegram:
-  token: "PUT_TELEGRAM_TOKEN_HERE"
-  admin_chat_id: 0
+  token: "${TELEGRAM_TOKEN}"   # подхватит из окружения
+  admin_chat_id: 0             # при желании укажем позже
+  request_timeout_sec: 30
 
 http:
   addr: ":8080"
