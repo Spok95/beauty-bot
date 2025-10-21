@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"log/slog"
+	"os"
 	"os/signal"
 	"syscall"
 	"time"
@@ -28,6 +29,25 @@ func runMigrations(dsn string, log *slog.Logger) error {
 	}
 	defer func() { _ = sqlDB.Close() }()
 
+	// Диагностика: куда реально подключились
+	var dbName, addr string
+	var port int
+	if err := sqlDB.QueryRow(`select current_database(), inet_server_addr()::text, inet_server_port()`).Scan(&dbName, &addr, &port); err == nil {
+		log.Info("db identity", "db", dbName, "addr", addr, "port", port)
+	} else {
+		log.Warn("db identity probe failed", "err", err)
+	}
+	// Список миграций на диске
+	if entries, err := os.ReadDir("migrations"); err == nil {
+		for _, e := range entries {
+			if !e.IsDir() {
+				log.Info("migration file", "name", e.Name())
+			}
+		}
+	} else {
+		log.Warn("cannot read migrations dir", "err", err)
+	}
+
 	// goose просто использует уже готовое подключение:
 	return goose.Up(sqlDB, "migrations")
 }
@@ -43,6 +63,9 @@ func main() {
 	}
 
 	log := logger.New(cfg.App.Env)
+
+	// В DEV полезно видеть, какой DSN действительно используется
+	log.Info("using DSN", "dsn", cfg.Postgres.DSN)
 
 	if err := runMigrations(cfg.Postgres.DSN, log); err != nil {
 		log.Error("migrations failed", "err", err)
