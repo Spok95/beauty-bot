@@ -8,6 +8,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Spok95/beauty-bot/internal/bot"
 	"github.com/Spok95/beauty-bot/internal/config"
 	"github.com/Spok95/beauty-bot/internal/infra/db"
 	httpx "github.com/Spok95/beauty-bot/internal/infra/http"
@@ -61,6 +62,22 @@ func main() {
 		}
 	}()
 	log.Info("HTTP server started", "addr", cfg.HTTP.Addr)
+
+	botCfg := bot.Config{
+		Token:      cfg.Telegram.Token,
+		TimeoutSec: cfg.Telegram.RequestTimeoutSec,
+	}
+	tg, err := bot.New(botCfg, log)
+	if err != nil {
+		log.Error("telegram init failed", "err", err)
+		return
+	}
+	go func() {
+		if err := tg.Run(ctx, botCfg.TimeoutSec); err != nil {
+			log.Error("telegram runtime error", "err", err)
+		}
+	}()
+	log.Info("telegram bot started")
 
 	<-ctx.Done()
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

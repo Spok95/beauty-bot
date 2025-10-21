@@ -1,6 +1,10 @@
 package config
 
-import "github.com/spf13/viper"
+import (
+	"strings"
+
+	"github.com/spf13/viper"
+)
 
 type Config struct {
 	App struct {
@@ -9,8 +13,9 @@ type Config struct {
 	} `mapstructure:"app"`
 
 	Telegram struct {
-		Token       string
-		AdminChatID int64 `mapstructure:"admin_chat_id"`
+		Token             string
+		AdminChatID       int64 `mapstructure:"admin_chat_id"`
+		RequestTimeoutSec int   `mapstructure:"request_timeout_sec"`
 	} `mapstructure:"telegram"`
 
 	HTTP struct {
@@ -29,9 +34,14 @@ type Config struct {
 func Load(path string) (Config, error) {
 	v := viper.New()
 	v.SetConfigFile(path)
-	// Позже можно будет переопределять через ENV (APP_*), если надо
+	// ENV-переопределения: APP_* и TELEGRAM_TOKEN
 	v.SetEnvPrefix("APP")
+	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_")) // telegram.token -> APP_TELEGRAM_TOKEN
 	v.AutomaticEnv()
+	// Разрешаем также голое TELEGRAM_TOKEN без префикса APP_
+	_ = v.BindEnv("telegram.token", "TELEGRAM_TOKEN")
+	// Дефолты
+	v.SetDefault("telegram.request_timeout_sec", 30)
 
 	var c Config
 	if err := v.ReadInConfig(); err != nil {
