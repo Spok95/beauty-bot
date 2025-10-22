@@ -5,24 +5,25 @@ import "time"
 type Role string
 
 const (
-	RoleMaster Role = "master"
-	RoleAdmin  Role = "admin"
+	RoleMaster        Role = "master"
+	RoleAdministrator Role = "administrator"
+	RoleAdmin         Role = "admin"
+)
+
+type Status string
+
+const (
+	StatusPending  Status = "pending"
+	StatusApproved Status = "approved"
+	StatusRejected Status = "rejected"
 )
 
 type User struct {
 	ID         int64
 	TelegramID int64
 	Username   string
-	FirstName  string
-	LastName   string
 	Role       Role
+	Status     Status
 	CreatedAt  time.Time
 	UpdatedAt  time.Time
-}
-
-type Telegram struct {
-	ID        int64
-	Username  string
-	FirstName string
-	LastName  string
 }
