@@ -7,20 +7,17 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-type Repo struct {
-	pool *pgxpool.Pool
-}
+type Repo struct{ pool *pgxpool.Pool }
 
 func NewRepo(pool *pgxpool.Pool) *Repo { return &Repo{pool: pool} }
 
 func (r *Repo) GetByTelegramID(ctx context.Context, tgID int64) (*User, error) {
 	row := r.pool.QueryRow(ctx, `
-		SELECT id, telegram_id, username, first_name, last_name, role, created_at, updated_at
+		SELECT id, telegram_id, COALESCE(username, ''), role, status, created_at, updated_at
 		FROM users WHERE telegram_id = $1
 	`, tgID)
-
 	var u User
-	if err := row.Scan(&u.ID, &u.TelegramID, &u.Username, &u.FirstName, &u.LastName, &u.Role, &u.CreatedAt, &u.UpdatedAt); err != nil {
+	if err := row.Scan(&u.ID, &u.TelegramID, &u.Username, &u.Role, &u.Status, &u.CreatedAt, &u.UpdatedAt); err != nil {
 		if err == pgx.ErrNoRows {
 			return nil, nil
 		}
@@ -29,23 +26,59 @@ func (r *Repo) GetByTelegramID(ctx context.Context, tgID int64) (*User, error) {
 	return &u, nil
 }
 
-// UpsertFromTelegram Upsert по Telegram-профилю. Если пользователь уже admin — не понижаем роль.
-func (r *Repo) UpsertFromTelegram(ctx context.Context, tg Telegram, role Role) (*User, error) {
+func (r *Repo) UpsertByTelegram(ctx context.Context, tgID int64, defaultRole Role) (*User, error) {
 	row := r.pool.QueryRow(ctx, `
-		INSERT INTO users (telegram_id, username, first_name, last_name, role)
-		VALUES ($1,$2,$3,$4,$5)
-		ON CONFLICT (telegram_id)
-		DO UPDATE SET
-			username   = EXCLUDED.username,
-			first_name = EXCLUDED.first_name,
-			last_name  = EXCLUDED.last_name,
+		INSERT INTO users (telegram_id, role)
+		VALUES ($1,$2)
+		ON CONFLICT (telegram_id) DO UPDATE SET
 			role       = CASE WHEN users.role = 'admin' THEN users.role ELSE EXCLUDED.role END,
 			updated_at = now()
-		RETURNING id, telegram_id, username, first_name, last_name, role, created_at, updated_at
-	`, tg.ID, tg.Username, tg.FirstName, tg.LastName, role)
-
+		RETURNING id, telegram_id, COALESCE(username, ''), role, status, created_at, updated_at
+	`, tgID, defaultRole)
 	var u User
-	if err := row.Scan(&u.ID, &u.TelegramID, &u.Username, &u.FirstName, &u.LastName, &u.Role, &u.CreatedAt, &u.UpdatedAt); err != nil {
+	if err := row.Scan(&u.ID, &u.TelegramID, &u.Username, &u.Role, &u.Status, &u.CreatedAt, &u.UpdatedAt); err != nil {
+		return nil, err
+	}
+	return &u, nil
+}
+
+func (r *Repo) SetFIO(ctx context.Context, tgID int64, fio string) (*User, error) {
+	row := r.pool.QueryRow(ctx, `
+		UPDATE users
+		SET username = $2, updated_at = now()
+		WHERE telegram_id = $1
+		RETURNING id, telegram_id, COALESCE(username, ''), role, status, created_at, updated_at
+	`, tgID, fio)
+	var u User
+	if err := row.Scan(&u.ID, &u.TelegramID, &u.Username, &u.Role, &u.Status, &u.CreatedAt, &u.UpdatedAt); err != nil {
+		return nil, err
+	}
+	return &u, nil
+}
+
+func (r *Repo) Approve(ctx context.Context, tgID int64, role Role) (*User, error) {
+	row := r.pool.QueryRow(ctx, `
+		UPDATE users
+		SET role = $2, status = 'approved', updated_at = now()
+		WHERE telegram_id = $1
+		RETURNING id, telegram_id, COALESCE(username, ''), role, status, created_at, updated_at
+	`, tgID, role)
+	var u User
+	if err := row.Scan(&u.ID, &u.TelegramID, &u.Username, &u.Role, &u.Status, &u.CreatedAt, &u.UpdatedAt); err != nil {
+		return nil, err
+	}
+	return &u, nil
+}
+
+func (r *Repo) Reject(ctx context.Context, tgID int64) (*User, error) {
+	row := r.pool.QueryRow(ctx, `
+		UPDATE users
+		SET status = 'rejected', updated_at = now()
+		WHERE telegram_id = $1
+		RETURNING id, telegram_id, COALESCE(username, ''), role, status, created_at, updated_at
+	`, tgID)
+	var u User
+	if err := row.Scan(&u.ID, &u.TelegramID, &u.Username, &u.Role, &u.Status, &u.CreatedAt, &u.UpdatedAt); err != nil {
 		return nil, err
 	}
 	return &u, nil

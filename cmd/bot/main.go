@@ -11,10 +11,12 @@ import (
 
 	"github.com/Spok95/beauty-bot/internal/bot"
 	"github.com/Spok95/beauty-bot/internal/config"
+	"github.com/Spok95/beauty-bot/internal/dialog"
 	"github.com/Spok95/beauty-bot/internal/domain/users"
 	"github.com/Spok95/beauty-bot/internal/infra/db"
 	httpx "github.com/Spok95/beauty-bot/internal/infra/http"
 	"github.com/Spok95/beauty-bot/internal/infra/logger"
+	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"github.com/subosito/gotenv"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -85,6 +87,7 @@ func main() {
 	log.Info("db connected")
 
 	usersRepo := users.NewRepo(pool)
+	stateRepo := dialog.NewRepo(pool)
 
 	srv := httpx.New(cfg.HTTP.Addr, cfg.Metrics.Enabled)
 	go func() {
@@ -94,18 +97,18 @@ func main() {
 	}()
 	log.Info("HTTP server started", "addr", cfg.HTTP.Addr)
 
-	botCfg := bot.Config{
-		Token:      cfg.Telegram.Token,
-		TimeoutSec: cfg.Telegram.RequestTimeoutSec,
-		AdminID:    cfg.Telegram.AdminChatID,
-	}
-	tg, err := bot.New(botCfg, log, usersRepo)
+	api, err := tgbotapi.NewBotAPI(cfg.Telegram.Token)
 	if err != nil {
 		log.Error("telegram init failed", "err", err)
 		return
 	}
+	if cfg.App.Env == "dev" {
+		api.Debug = true
+	}
+
+	tg := bot.New(api, log, usersRepo, stateRepo, cfg.Telegram.AdminChatID)
 	go func() {
-		if err := tg.Run(ctx, botCfg.TimeoutSec); err != nil {
+		if err := tg.Run(ctx, cfg.Telegram.RequestTimeoutSec); err != nil {
 			log.Error("telegram runtime error", "err", err)
 		}
 	}()
