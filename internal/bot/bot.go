@@ -309,10 +309,14 @@ func (b *Bot) showMaterialItemMenu(ctx context.Context, chatID int64, editMsgID 
 		b.editTextAndClear(chatID, editMsgID, "Материал не найден")
 		return
 	}
+
+	// Переключатель активности
 	toggle := "🙈 Скрыть"
 	if !m.Active {
 		toggle = "👁 Показать"
 	}
+
+	// Кнопки
 	rows := [][]tgbotapi.InlineKeyboardButton{}
 	if m.Active {
 		rows = append(rows, tgbotapi.NewInlineKeyboardRow(
@@ -327,7 +331,18 @@ func (b *Bot) showMaterialItemMenu(ctx context.Context, chatID int64, editMsgID 
 	))
 	rows = append(rows, navKeyboard(true, true).InlineKeyboard[0])
 	kb := tgbotapi.NewInlineKeyboardMarkup(rows...)
-	text := fmt.Sprintf("Материал: %s %s\nЕд.: %s\nСтатус: %v", badge(m.Active), m.Name, m.Unit, m.Active)
+
+	// Получаем название категории
+	catName := fmt.Sprintf("ID:%d", m.CategoryID)
+	if c, _ := b.catalog.GetCategoryByID(ctx, m.CategoryID); c != nil {
+		catName = c.Name
+	}
+
+	text := fmt.Sprintf(
+		"Материал: %s %s\nКатегория: %s\nЕд.: %s\nСтатус: %v",
+		badge(m.Active), m.Name, catName, m.Unit, m.Active,
+	)
+
 	b.send(tgbotapi.NewEditMessageTextAndMarkup(chatID, editMsgID, text, kb))
 }
 
