@@ -433,19 +433,34 @@ func (b *Bot) showStockMaterialList(ctx context.Context, chatID int64, editMsgID
 }
 
 func (b *Bot) showStockItem(ctx context.Context, chatID int64, editMsgID int, whID, matID int64) {
-	// берём материал и баланс
-	m, _ := b.materials.GetByID(ctx, matID)
-	if m == nil {
+	m, err := b.materials.GetByID(ctx, matID)
+	if err != nil || m == nil {
 		b.editTextAndClear(chatID, editMsgID, "Материал не найден")
 		return
 	}
-	bls, _ := b.materials.ListBalancesByWarehouse(ctx, whID)
-	var q float64
-	for _, b := range bls {
-		if b.MaterialID == matID {
-			q = b.Qty
+
+	// Имя и тип склада
+	w, _ := b.catalog.GetWarehouseByID(ctx, whID)
+	whTitle := fmt.Sprintf("ID:%d", whID)
+	if w != nil {
+		// человекочитаемый тип
+		t := "неизвестный"
+		switch w.Type {
+		case catalog.WHTConsumables:
+			t = "расходники"
+		case catalog.WHTClientService:
+			t = "клиентский"
 		}
+		whTitle = fmt.Sprintf("%s (%s)", w.Name, t)
 	}
+
+	// Текущий остаток (может быть отрицательным)
+	qty, err := b.materials.GetBalance(ctx, whID, matID)
+	if err != nil {
+		qty = 0
+	}
+
+	// Кнопки действий
 	kb := tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData("➕ Приход", fmt.Sprintf("st:in:%d:%d", whID, matID)),
@@ -453,7 +468,12 @@ func (b *Bot) showStockItem(ctx context.Context, chatID int64, editMsgID int, wh
 		),
 		navKeyboard(true, true).InlineKeyboard[0],
 	)
-	text := fmt.Sprintf("Склад: %d\nМатериал: %s\nОстаток: %.3f %s", whID, m.Name, q, m.Unit)
+
+	text := fmt.Sprintf(
+		"Склад: %s\nМатериал: %s\nОстаток: %.3f %s",
+		whTitle, m.Name, qty, m.Unit,
+	)
+
 	b.send(tgbotapi.NewEditMessageTextAndMarkup(chatID, editMsgID, text, kb))
 }
 
