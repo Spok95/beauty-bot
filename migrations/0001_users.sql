@@ -3,7 +3,6 @@
 CREATE TABLE IF NOT EXISTS users (
                                      id           BIGSERIAL PRIMARY KEY,
                                      telegram_id  BIGINT      NOT NULL UNIQUE,
-    -- username хранит ФИО, не допускаем NULL
                                      username     TEXT        NOT NULL DEFAULT '',
                                      role         TEXT        NOT NULL DEFAULT 'master'
                                          CHECK (role IN ('master','administrator','admin')),
@@ -30,7 +29,28 @@ CREATE TABLE IF NOT EXISTS material_categories (
                                                    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- MATERIALS
+CREATE TABLE IF NOT EXISTS materials (
+                                         id          BIGSERIAL PRIMARY KEY,
+                                         name        TEXT        NOT NULL UNIQUE,
+                                         category_id BIGINT      NOT NULL REFERENCES material_categories(id) ON DELETE RESTRICT,
+                                         unit        TEXT        NOT NULL DEFAULT 'pcs',
+                                         active      BOOLEAN     NOT NULL DEFAULT TRUE,
+                                         created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_materials_category ON materials(category_id);
+
+-- BALANCES
+CREATE TABLE IF NOT EXISTS balances (
+                                        warehouse_id BIGINT NOT NULL REFERENCES warehouses(id) ON DELETE CASCADE,
+                                        material_id  BIGINT NOT NULL REFERENCES materials(id)  ON DELETE CASCADE,
+                                        qty          NUMERIC(18,3) NOT NULL DEFAULT 0,
+                                        PRIMARY KEY (warehouse_id, material_id)
+);
+
 -- +goose Down
+DROP TABLE IF EXISTS balances;
+DROP TABLE IF EXISTS materials;
 DROP TABLE IF EXISTS material_categories;
 DROP TABLE IF EXISTS warehouses;
 DROP TABLE IF EXISTS users;

@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/Spok95/beauty-bot/internal/domain/materials"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 
 	"github.com/Spok95/beauty-bot/internal/dialog"
@@ -21,10 +22,11 @@ type Bot struct {
 	states    *dialog.Repo
 	adminChat int64
 	catalog   *catalog.Repo
+	materials *materials.Repo
 }
 
-func New(api *tgbotapi.BotAPI, log *slog.Logger, usersRepo *users.Repo, statesRepo *dialog.Repo, adminChatID int64, catalogRepo *catalog.Repo) *Bot {
-	return &Bot{api: api, log: log, users: usersRepo, states: statesRepo, adminChat: adminChatID, catalog: catalogRepo}
+func New(api *tgbotapi.BotAPI, log *slog.Logger, usersRepo *users.Repo, statesRepo *dialog.Repo, adminChatID int64, catalogRepo *catalog.Repo, materialsRepo *materials.Repo) *Bot {
+	return &Bot{api: api, log: log, users: usersRepo, states: statesRepo, adminChat: adminChatID, catalog: catalogRepo, materials: materialsRepo}
 }
 
 func (b *Bot) Run(ctx context.Context, timeoutSec int) error {
@@ -115,6 +117,7 @@ func adminReplyKeyboard() tgbotapi.ReplyKeyboardMarkup {
 		Keyboard: [][]tgbotapi.KeyboardButton{
 			{tgbotapi.NewKeyboardButton("Список команд")},
 			{tgbotapi.NewKeyboardButton("Склады"), tgbotapi.NewKeyboardButton("Категории")},
+			{tgbotapi.NewKeyboardButton("Материалы")},
 		},
 	}
 }
@@ -252,6 +255,105 @@ func (b *Bot) showCategoryItemMenu(ctx context.Context, chatID int64, editMsgID 
 	b.send(tgbotapi.NewEditMessageTextAndMarkup(chatID, editMsgID, text, kb))
 }
 
+func (b *Bot) showMaterialMenu(chatID int64, editMsgID *int) {
+	kb := tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("➕ Создать материал", "adm:mat:add"),
+			tgbotapi.NewInlineKeyboardButtonData("📄 Список материалов", "adm:mat:list"),
+		),
+		navKeyboard(false, true).InlineKeyboard[0],
+	)
+	if editMsgID != nil {
+		b.send(tgbotapi.NewEditMessageTextAndMarkup(chatID, *editMsgID, "Материалы — выберите действие", kb))
+	} else {
+		m := tgbotapi.NewMessage(chatID, "Материалы — выберите действие")
+		m.ReplyMarkup = kb
+		b.send(m)
+	}
+}
+
+func (b *Bot) showMaterialList(ctx context.Context, chatID int64, editMsgID int) {
+	items, err := b.materials.List(ctx, false)
+	if err != nil {
+		b.editTextAndClear(chatID, editMsgID, "Ошибка загрузки материалов")
+		return
+	}
+	rows := [][]tgbotapi.InlineKeyboardButton{}
+	for _, m := range items {
+		label := fmt.Sprintf("%s %s", badge(m.Active), m.Name)
+		rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(label, fmt.Sprintf("adm:mat:menu:%d", m.ID)),
+		))
+	}
+	rows = append(rows, navKeyboard(true, true).InlineKeyboard[0])
+	kb := tgbotapi.NewInlineKeyboardMarkup(rows...)
+	b.send(tgbotapi.NewEditMessageTextAndMarkup(chatID, editMsgID, "Список материалов:", kb))
+}
+
+func (b *Bot) showMaterialItemMenu(ctx context.Context, chatID int64, editMsgID int, id int64) {
+	m, err := b.materials.GetByID(ctx, id)
+	if err != nil || m == nil {
+		b.editTextAndClear(chatID, editMsgID, "Материал не найден")
+		return
+	}
+	toggle := "🙈 Скрыть"
+	if !m.Active {
+		toggle = "👁 Показать"
+	}
+	rows := [][]tgbotapi.InlineKeyboardButton{}
+	if m.Active {
+		rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("✏️ Переименовать", fmt.Sprintf("adm:mat:rn:%d", id)),
+		))
+	}
+	rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+		tgbotapi.NewInlineKeyboardButtonData("Единица: pcs/ml/g/l/kg", fmt.Sprintf("adm:mat:unit:%d", id)),
+	))
+	rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+		tgbotapi.NewInlineKeyboardButtonData(toggle, fmt.Sprintf("adm:mat:tg:%d", id)),
+	))
+	rows = append(rows, navKeyboard(true, true).InlineKeyboard[0])
+	kb := tgbotapi.NewInlineKeyboardMarkup(rows...)
+	text := fmt.Sprintf("Материал: %s %s\nКатегория ID: %d\nЕд.: %s\nСтатус: %v", badge(m.Active), m.Name, m.CategoryID, m.Unit, m.Active)
+	b.send(tgbotapi.NewEditMessageTextAndMarkup(chatID, editMsgID, text, kb))
+}
+
+func (b *Bot) unitKeyboard(id int64) tgbotapi.InlineKeyboardMarkup {
+	return tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("pcs", fmt.Sprintf("adm:mat:unit:set:%d:pcs", id)),
+			tgbotapi.NewInlineKeyboardButtonData("ml", fmt.Sprintf("adm:mat:unit:set:%d:ml", id)),
+			tgbotapi.NewInlineKeyboardButtonData("g", fmt.Sprintf("adm:mat:unit:set:%d:g", id)),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("l", fmt.Sprintf("adm:mat:unit:set:%d:l", id)),
+			tgbotapi.NewInlineKeyboardButtonData("kg", fmt.Sprintf("adm:mat:unit:set:%d:kg", id)),
+		),
+		navKeyboard(true, true).InlineKeyboard[0],
+	)
+}
+
+func (b *Bot) showCategoryPick(ctx context.Context, chatID int64, editMsgID int) {
+	// список только активных категорий для создания материала
+	rows := [][]tgbotapi.InlineKeyboardButton{}
+	cats, err := b.catalog.ListCategories(ctx)
+	if err != nil {
+		b.editTextAndClear(chatID, editMsgID, "Ошибка загрузки категорий")
+		return
+	}
+	for _, c := range cats {
+		if !c.Active {
+			continue
+		}
+		rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(c.Name, fmt.Sprintf("adm:mat:pickcat:%d", c.ID)),
+		))
+	}
+	rows = append(rows, navKeyboard(true, true).InlineKeyboard[0])
+	kb := tgbotapi.NewInlineKeyboardMarkup(rows...)
+	b.send(tgbotapi.NewEditMessageTextAndMarkup(chatID, editMsgID, "Выберите категорию:", kb))
+}
+
 /*** ADMIN UI ***/
 
 func (b *Bot) adminMenu(chatID int64, editMessageID *int) {
@@ -343,7 +445,7 @@ func (b *Bot) onMessage(ctx context.Context, upd tgbotapi.Update) {
 	}
 
 	// Кнопки нижней панели для админа
-	if msg.Text == "Список команд" || msg.Text == "Склады" || msg.Text == "Категории" {
+	if msg.Text == "Список команд" || msg.Text == "Склады" || msg.Text == "Категории" || msg.Text == "Материалы" {
 		u, _ := b.users.GetByTelegramID(ctx, tgID)
 		if u == nil || u.Role != users.RoleAdmin || u.Status != users.StatusApproved {
 			// игнорируем для не-админов
@@ -358,6 +460,10 @@ func (b *Bot) onMessage(ctx context.Context, upd tgbotapi.Update) {
 		case "Категории":
 			_ = b.states.Set(ctx, chatID, dialog.StateAdmCatMenu, dialog.Payload{})
 			b.showCategoryMenu(chatID, nil)
+		case "Материалы":
+			_ = b.states.Set(ctx, chatID, dialog.StateAdmMatMenu, dialog.Payload{})
+			b.showMaterialMenu(chatID, nil)
+			return
 		}
 		return
 	}
@@ -416,7 +522,7 @@ func (b *Bot) onMessage(ctx context.Context, upd tgbotapi.Update) {
 			b.send(tgbotapi.NewMessage(chatID, "Ошибка при создании категории"))
 			return
 		}
-		_ = b.states.Set(ctx, chatID, dialog.StateAdmCatName, dialog.Payload{})
+		_ = b.states.Set(ctx, chatID, dialog.StateAdmCatMenu, dialog.Payload{})
 		b.send(tgbotapi.NewMessage(chatID, fmt.Sprintf("Категория «%s» создана.", name)))
 		b.showCategoryMenu(chatID, nil)
 		return
@@ -454,6 +560,40 @@ func (b *Bot) onMessage(ctx context.Context, upd tgbotapi.Update) {
 		_ = b.states.Set(ctx, chatID, dialog.StateAdmCatMenu, dialog.Payload{})
 		b.send(tgbotapi.NewMessage(chatID, "Категория переименована."))
 		b.showCategoryMenu(chatID, nil)
+		return
+
+	case dialog.StateAdmMatName:
+		name := strings.TrimSpace(msg.Text)
+		if name == "" {
+			b.send(tgbotapi.NewMessage(chatID, "Название не может быть пустым. Введите ещё раз."))
+			return
+		}
+		cidAny := st.Payload["cat_id"]
+		catID := int64(cidAny.(float64))
+		if _, err := b.materials.Create(ctx, name, catID, materials.UnitPcs); err != nil {
+			b.send(tgbotapi.NewMessage(chatID, "Ошибка при создании материала"))
+			return
+		}
+		_ = b.states.Set(ctx, chatID, dialog.StateAdmMatMenu, dialog.Payload{})
+		b.send(tgbotapi.NewMessage(chatID, fmt.Sprintf("Материал «%s» создан.", name)))
+		b.showMaterialMenu(chatID, nil)
+		return
+
+	case dialog.StateAdmMatRename:
+		name := strings.TrimSpace(msg.Text)
+		if name == "" {
+			b.send(tgbotapi.NewMessage(chatID, "Название не может быть пустым. Введите ещё раз."))
+			return
+		}
+		idAny := st.Payload["mat_id"]
+		id := int64(idAny.(float64))
+		if _, err := b.materials.UpdateName(ctx, id, name); err != nil {
+			b.send(tgbotapi.NewMessage(chatID, "Ошибка при переименовании материала"))
+			return
+		}
+		_ = b.states.Set(ctx, chatID, dialog.StateAdmMatMenu, dialog.Payload{})
+		b.send(tgbotapi.NewMessage(chatID, "Материал переименован."))
+		b.showMaterialMenu(chatID, nil)
 		return
 	}
 }
@@ -510,12 +650,52 @@ func (b *Bot) onCallback(ctx context.Context, upd tgbotapi.Update) {
 				b.showWarehouseMenu(fromChat, &cb.Message.MessageID)
 				_ = b.states.Set(ctx, fromChat, dialog.StateAdmWhMenu, dialog.Payload{})
 			}
+		case dialog.StateAdmMatMenu:
+			b.showMaterialMenu(fromChat, &cb.Message.MessageID)
+			_ = b.states.Set(ctx, fromChat, dialog.StateAdmMatMenu, dialog.Payload{})
 		case dialog.StateAdmCatName:
 			b.showCategoryMenu(fromChat, &cb.Message.MessageID)
 			_ = b.states.Set(ctx, fromChat, dialog.StateAdmCatMenu, dialog.Payload{})
 		case dialog.StateAdmWhName:
 			b.showWarehouseMenu(fromChat, &cb.Message.MessageID)
 			_ = b.states.Set(ctx, fromChat, dialog.StateAdmWhMenu, dialog.Payload{})
+		case dialog.StateAdmMatList:
+			// из списка — назад в меню материалов
+			b.showMaterialMenu(fromChat, &cb.Message.MessageID)
+			_ = b.states.Set(ctx, fromChat, dialog.StateAdmMatMenu, dialog.Payload{})
+		case dialog.StateAdmMatItem:
+			// из карточки — назад в список
+			b.showMaterialList(ctx, fromChat, cb.Message.MessageID)
+			_ = b.states.Set(ctx, fromChat, dialog.StateAdmMatList, dialog.Payload{})
+		case dialog.StateAdmMatUnit:
+			// из выбора единицы — назад в карточку
+			if idAny, ok := st.Payload["mat_id"]; ok {
+				id := int64(idAny.(float64))
+				b.showMaterialItemMenu(ctx, fromChat, cb.Message.MessageID, id)
+				_ = b.states.Set(ctx, fromChat, dialog.StateAdmMatItem, dialog.Payload{"mat_id": id})
+			} else {
+				b.showMaterialMenu(fromChat, &cb.Message.MessageID)
+				_ = b.states.Set(ctx, fromChat, dialog.StateAdmMatMenu, dialog.Payload{})
+			}
+		case dialog.StateAdmMatRename:
+			// из переименования — назад в карточку
+			if idAny, ok := st.Payload["mat_id"]; ok {
+				id := int64(idAny.(float64))
+				b.showMaterialItemMenu(ctx, fromChat, cb.Message.MessageID, id)
+				_ = b.states.Set(ctx, fromChat, dialog.StateAdmMatItem, dialog.Payload{"mat_id": id})
+			} else {
+				b.showMaterialMenu(fromChat, &cb.Message.MessageID)
+				_ = b.states.Set(ctx, fromChat, dialog.StateAdmMatMenu, dialog.Payload{})
+			}
+		case dialog.StateAdmMatPickCat:
+			// из выбора категории при создании — назад в меню материалов
+			b.showMaterialMenu(fromChat, &cb.Message.MessageID)
+			_ = b.states.Set(ctx, fromChat, dialog.StateAdmMatMenu, dialog.Payload{})
+		case dialog.StateAdmMatName:
+			// из ввода имени — назад к выбору категории
+			b.showCategoryPick(ctx, fromChat, cb.Message.MessageID)
+			_ = b.states.Set(ctx, fromChat, dialog.StateAdmMatPickCat, dialog.Payload{})
+
 		default:
 			b.editTextAndClear(fromChat, cb.Message.MessageID, "Действие неактуально.")
 		}
@@ -675,6 +855,7 @@ func (b *Bot) onCallback(ctx context.Context, upd tgbotapi.Update) {
 		b.showWarehouseItemMenu(ctx, fromChat, cb.Message.MessageID, id)
 		_ = b.answerCallback(cb, "Готово", false)
 		return
+
 	case strings.HasPrefix(data, "adm:wh:type:"):
 		// выбор типа при создании
 		st, _ := b.states.Get(ctx, fromChat)
@@ -754,6 +935,111 @@ func (b *Bot) onCallback(ctx context.Context, upd tgbotapi.Update) {
 		}
 		b.showCategoryItemMenu(ctx, fromChat, cb.Message.MessageID, id)
 		_ = b.answerCallback(cb, "Готово", false)
+		return
+
+	case data == "adm:mat:add":
+		_ = b.states.Set(ctx, fromChat, dialog.StateAdmMatPickCat, dialog.Payload{})
+		b.editTextWithNav(fromChat, cb.Message.MessageID, "Сначала выберите категорию для материала.")
+		b.showCategoryPick(ctx, fromChat, cb.Message.MessageID)
+		_ = b.answerCallback(cb, "Ок", false)
+		return
+
+	case data == "adm:mat:list":
+		_ = b.states.Set(ctx, fromChat, dialog.StateAdmMatList, dialog.Payload{})
+		b.showMaterialList(ctx, fromChat, cb.Message.MessageID)
+		_ = b.answerCallback(cb, "Ок", false)
+		return
+
+	case strings.HasPrefix(data, "adm:mat:menu:"):
+		id, _ := strconv.ParseInt(strings.TrimPrefix(data, "adm:mat:menu:"), 10, 64)
+		_ = b.states.Set(ctx, fromChat, dialog.StateAdmMatItem, dialog.Payload{"mat_id": id})
+		b.showMaterialItemMenu(ctx, fromChat, cb.Message.MessageID, id)
+		_ = b.answerCallback(cb, "Ок", false)
+		return
+
+	case strings.HasPrefix(data, "adm:mat:pickcat:"):
+		cid, _ := strconv.ParseInt(strings.TrimPrefix(data, "adm:mat:pickcat:"), 10, 64)
+		_ = b.states.Set(ctx, fromChat, dialog.StateAdmMatName, dialog.Payload{"cat_id": cid})
+		b.editTextWithNav(fromChat, cb.Message.MessageID, "Введите название материала сообщением.")
+		_ = b.answerCallback(cb, "Ок", false)
+		return
+
+	case strings.HasPrefix(data, "adm:mat:rn:"):
+		id, _ := strconv.ParseInt(strings.TrimPrefix(data, "adm:mat:rn:"), 10, 64)
+		m, _ := b.materials.GetByID(ctx, id)
+		if m == nil {
+			b.editTextAndClear(fromChat, cb.Message.MessageID, "Материал не найден")
+			_ = b.answerCallback(cb, "Ошибка", true)
+			return
+		}
+		if !m.Active {
+			b.showMaterialItemMenu(ctx, fromChat, cb.Message.MessageID, id)
+			_ = b.answerCallback(cb, "Материал скрыт. Сначала включите его.", true)
+			return
+		}
+		_ = b.states.Set(ctx, fromChat, dialog.StateAdmMatRename, dialog.Payload{"mat_id": id})
+		b.editTextWithNav(fromChat, cb.Message.MessageID, "Введите новое название материала сообщением.")
+		_ = b.answerCallback(cb, "Ок", false)
+		return
+
+	case strings.HasPrefix(data, "adm:mat:tg:"):
+		id, _ := strconv.ParseInt(strings.TrimPrefix(data, "adm:mat:tg:"), 10, 64)
+		m, _ := b.materials.GetByID(ctx, id)
+		if m == nil {
+			b.editTextAndClear(fromChat, cb.Message.MessageID, "Материал не найден")
+			_ = b.answerCallback(cb, "Ошибка", true)
+			return
+		}
+		_, err := b.materials.SetActive(ctx, id, !m.Active)
+		if err != nil {
+			_ = b.answerCallback(cb, "Ошибка", true)
+			return
+		}
+		b.showMaterialItemMenu(ctx, fromChat, cb.Message.MessageID, id)
+		_ = b.answerCallback(cb, "Готово", false)
+		return
+
+	case strings.HasPrefix(data, "adm:mat:unit:set:"):
+		// формат: adm:mat:unit:set:<id>:<unit>
+		payload := strings.TrimPrefix(data, "adm:mat:unit:set:")
+		parts := strings.SplitN(payload, ":", 2)
+		if len(parts) != 2 {
+			_ = b.answerCallback(cb, "Некорректные данные", true)
+			return
+		}
+		id, err := strconv.ParseInt(parts[0], 10, 64)
+		if err != nil || id <= 0 {
+			_ = b.answerCallback(cb, "Некорректный ID", true)
+			return
+		}
+		unit := materials.Unit(parts[1])
+
+		if _, err := b.materials.UpdateUnit(ctx, id, unit); err != nil {
+			_ = b.answerCallback(cb, "Ошибка", true)
+			return
+		}
+		// Показать карточку и зафиксировать состояние, чтобы Back вернул в неё
+		b.showMaterialItemMenu(ctx, fromChat, cb.Message.MessageID, id)
+		_ = b.states.Set(ctx, fromChat, dialog.StateAdmMatItem, dialog.Payload{"mat_id": id})
+		_ = b.answerCallback(cb, "Обновлено", false)
+		return
+
+	case strings.HasPrefix(data, "adm:mat:unit:"):
+		tail := strings.TrimPrefix(data, "adm:mat:unit:")
+		if strings.HasPrefix(tail, "set:") {
+			// этот колбэк обрабатывается в кейсе выше
+			return
+		}
+		id, err := strconv.ParseInt(tail, 10, 64)
+		if err != nil || id <= 0 {
+			_ = b.answerCallback(cb, "Некорректные данные", true)
+			return
+		}
+		_ = b.states.Set(ctx, fromChat, dialog.StateAdmMatUnit, dialog.Payload{"mat_id": id})
+		kb := b.unitKeyboard(id)
+		edit := tgbotapi.NewEditMessageTextAndMarkup(fromChat, cb.Message.MessageID, "Выберите единицу измерения:", kb)
+		b.send(edit)
+		_ = b.answerCallback(cb, "Ок", false)
 		return
 	}
 }

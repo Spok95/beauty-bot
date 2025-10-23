@@ -13,6 +13,7 @@ import (
 	"github.com/Spok95/beauty-bot/internal/config"
 	"github.com/Spok95/beauty-bot/internal/dialog"
 	"github.com/Spok95/beauty-bot/internal/domain/catalog"
+	"github.com/Spok95/beauty-bot/internal/domain/materials"
 	"github.com/Spok95/beauty-bot/internal/domain/users"
 	"github.com/Spok95/beauty-bot/internal/infra/db"
 	httpx "github.com/Spok95/beauty-bot/internal/infra/http"
@@ -90,6 +91,7 @@ func main() {
 	usersRepo := users.NewRepo(pool)
 	stateRepo := dialog.NewRepo(pool)
 	catalogRepo := catalog.NewRepo(pool)
+	materialsRepo := materials.NewRepo(pool)
 
 	srv := httpx.New(cfg.HTTP.Addr, cfg.Metrics.Enabled)
 	go func() {
@@ -108,7 +110,7 @@ func main() {
 		api.Debug = true
 	}
 
-	tg := bot.New(api, log, usersRepo, stateRepo, cfg.Telegram.AdminChatID, catalogRepo)
+	tg := bot.New(api, log, usersRepo, stateRepo, cfg.Telegram.AdminChatID, catalogRepo, materialsRepo)
 
 	go func() {
 		if err := tg.Run(ctx, cfg.Telegram.RequestTimeoutSec); err != nil {
