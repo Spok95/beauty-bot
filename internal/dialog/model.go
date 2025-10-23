@@ -22,6 +22,15 @@ const (
 	StateAdmCatMenu   State = "adm_cat_menu"
 	StateAdmCatName   State = "adm_cat_name"   // ввод названия при создании
 	StateAdmCatRename State = "adm_cat_rename" // ввод нового имени выбранной категории
+
+	// Материалы
+	StateAdmMatMenu    State = "adm_mat_menu" // уже есть
+	StateAdmMatList    State = "adm_mat_list" // НОВОЕ: экран "Список материалов"
+	StateAdmMatItem    State = "adm_mat_item" // НОВОЕ: карточка конкретного материала
+	StateAdmMatPickCat State = "adm_mat_pick_cat"
+	StateAdmMatName    State = "adm_mat_name"
+	StateAdmMatUnit    State = "adm_mat_unit"
+	StateAdmMatRename  State = "adm_mat_rename"
 )
 
 type Payload map[string]any
