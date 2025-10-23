@@ -48,6 +48,20 @@ CREATE TABLE IF NOT EXISTS balances (
                                         PRIMARY KEY (warehouse_id, material_id)
 );
 
+-- MOVEMENTS (приход/списание)
+CREATE TABLE IF NOT EXISTS movements (
+                                         id           BIGSERIAL PRIMARY KEY,
+                                         created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+                                         actor_id     BIGINT      NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+                                         warehouse_id BIGINT      NOT NULL REFERENCES warehouses(id) ON DELETE RESTRICT,
+                                         material_id  BIGINT      NOT NULL REFERENCES materials(id)  ON DELETE RESTRICT,
+                                         qty          NUMERIC(18,3) NOT NULL, -- >0 для приходов, <0 для списаний
+                                         type         TEXT NOT NULL CHECK (type IN ('in','out')),
+                                         note         TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_movements_wh_mat_time ON movements(warehouse_id, material_id, created_at DESC);
+
+
 -- +goose Down
 DROP TABLE IF EXISTS balances;
 DROP TABLE IF EXISTS materials;

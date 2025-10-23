@@ -5,11 +5,8 @@ import "time"
 type Unit string
 
 const (
-	UnitPcs Unit = "pcs" // штуки
-	UnitMl  Unit = "ml"
+	UnitPcs Unit = "pcs"
 	UnitG   Unit = "g"
-	UnitL   Unit = "l"
-	UnitKg  Unit = "kg"
 )
 
 type Material struct {

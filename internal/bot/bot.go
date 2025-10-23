@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/Spok95/beauty-bot/internal/domain/inventory"
 	"github.com/Spok95/beauty-bot/internal/domain/materials"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 
@@ -14,6 +15,8 @@ import (
 	"github.com/Spok95/beauty-bot/internal/domain/catalog"
 	"github.com/Spok95/beauty-bot/internal/domain/users"
 )
+
+const lowStockThresholdGr = 20.0
 
 type Bot struct {
 	api       *tgbotapi.BotAPI
@@ -23,10 +26,19 @@ type Bot struct {
 	adminChat int64
 	catalog   *catalog.Repo
 	materials *materials.Repo
+	inventory *inventory.Repo
 }
 
-func New(api *tgbotapi.BotAPI, log *slog.Logger, usersRepo *users.Repo, statesRepo *dialog.Repo, adminChatID int64, catalogRepo *catalog.Repo, materialsRepo *materials.Repo) *Bot {
-	return &Bot{api: api, log: log, users: usersRepo, states: statesRepo, adminChat: adminChatID, catalog: catalogRepo, materials: materialsRepo}
+func New(api *tgbotapi.BotAPI, log *slog.Logger,
+	usersRepo *users.Repo, statesRepo *dialog.Repo,
+	adminChatID int64, catalogRepo *catalog.Repo,
+	materialsRepo *materials.Repo, inventoryRepo *inventory.Repo) *Bot {
+
+	return &Bot{
+		api: api, log: log, users: usersRepo, states: statesRepo,
+		adminChat: adminChatID, catalog: catalogRepo,
+		materials: materialsRepo, inventory: inventoryRepo,
+	}
 }
 
 func (b *Bot) Run(ctx context.Context, timeoutSec int) error {
@@ -118,6 +130,7 @@ func adminReplyKeyboard() tgbotapi.ReplyKeyboardMarkup {
 			{tgbotapi.NewKeyboardButton("Список команд")},
 			{tgbotapi.NewKeyboardButton("Склады"), tgbotapi.NewKeyboardButton("Категории")},
 			{tgbotapi.NewKeyboardButton("Материалы")},
+			{tgbotapi.NewKeyboardButton("Остатки")},
 		},
 	}
 }
@@ -307,14 +320,14 @@ func (b *Bot) showMaterialItemMenu(ctx context.Context, chatID int64, editMsgID 
 		))
 	}
 	rows = append(rows, tgbotapi.NewInlineKeyboardRow(
-		tgbotapi.NewInlineKeyboardButtonData("Единица: pcs/ml/g/l/kg", fmt.Sprintf("adm:mat:unit:%d", id)),
+		tgbotapi.NewInlineKeyboardButtonData("Единица: pcs/g", fmt.Sprintf("adm:mat:unit:%d", id)),
 	))
 	rows = append(rows, tgbotapi.NewInlineKeyboardRow(
 		tgbotapi.NewInlineKeyboardButtonData(toggle, fmt.Sprintf("adm:mat:tg:%d", id)),
 	))
 	rows = append(rows, navKeyboard(true, true).InlineKeyboard[0])
 	kb := tgbotapi.NewInlineKeyboardMarkup(rows...)
-	text := fmt.Sprintf("Материал: %s %s\nКатегория ID: %d\nЕд.: %s\nСтатус: %v", badge(m.Active), m.Name, m.CategoryID, m.Unit, m.Active)
+	text := fmt.Sprintf("Материал: %s %s\nЕд.: %s\nСтатус: %v", badge(m.Active), m.Name, m.Unit, m.Active)
 	b.send(tgbotapi.NewEditMessageTextAndMarkup(chatID, editMsgID, text, kb))
 }
 
@@ -322,12 +335,7 @@ func (b *Bot) unitKeyboard(id int64) tgbotapi.InlineKeyboardMarkup {
 	return tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData("pcs", fmt.Sprintf("adm:mat:unit:set:%d:pcs", id)),
-			tgbotapi.NewInlineKeyboardButtonData("ml", fmt.Sprintf("adm:mat:unit:set:%d:ml", id)),
 			tgbotapi.NewInlineKeyboardButtonData("g", fmt.Sprintf("adm:mat:unit:set:%d:g", id)),
-		),
-		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("l", fmt.Sprintf("adm:mat:unit:set:%d:l", id)),
-			tgbotapi.NewInlineKeyboardButtonData("kg", fmt.Sprintf("adm:mat:unit:set:%d:kg", id)),
 		),
 		navKeyboard(true, true).InlineKeyboard[0],
 	)
@@ -352,6 +360,103 @@ func (b *Bot) showCategoryPick(ctx context.Context, chatID int64, editMsgID int)
 	rows = append(rows, navKeyboard(true, true).InlineKeyboard[0])
 	kb := tgbotapi.NewInlineKeyboardMarkup(rows...)
 	b.send(tgbotapi.NewEditMessageTextAndMarkup(chatID, editMsgID, "Выберите категорию:", kb))
+}
+
+func (b *Bot) showStockWarehouseList(ctx context.Context, chatID int64, editMsgID *int) {
+	ws, err := b.catalog.ListWarehouses(ctx)
+	if err != nil {
+		if editMsgID != nil {
+			b.editTextAndClear(chatID, *editMsgID, "Ошибка загрузки складов")
+			return
+		}
+		b.send(tgbotapi.NewMessage(chatID, "Ошибка загрузки складов"))
+		return
+	}
+	rows := [][]tgbotapi.InlineKeyboardButton{}
+	for _, w := range ws {
+		if !w.Active {
+			continue
+		}
+		rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(w.Name, fmt.Sprintf("st:list:%d", w.ID)),
+		))
+	}
+	rows = append(rows, navKeyboard(false, true).InlineKeyboard[0])
+	kb := tgbotapi.NewInlineKeyboardMarkup(rows...)
+	if editMsgID != nil {
+		b.send(tgbotapi.NewEditMessageTextAndMarkup(chatID, *editMsgID, "Выберите склад:", kb))
+	} else {
+		m := tgbotapi.NewMessage(chatID, "Выберите склад:")
+		m.ReplyMarkup = kb
+		b.send(m)
+	}
+}
+
+func (b *Bot) showStockMaterialList(ctx context.Context, chatID int64, editMsgID int, whID int64) {
+	items, err := b.materials.ListWithBalanceByWarehouse(ctx, whID)
+	if err != nil {
+		b.editTextAndClear(chatID, editMsgID, "Ошибка загрузки материалов")
+		return
+	}
+	rows := [][]tgbotapi.InlineKeyboardButton{}
+	for _, it := range items {
+		label := fmt.Sprintf("%s: %d %s", it.Name, it.Balance, it.Unit)
+		if it.Unit == materials.UnitG {
+			if it.Balance < 0 {
+				label = "⚠️ " + label + " — закончились"
+			} else if it.Balance < lowStockThresholdGr {
+				label = "⚠️ " + label + " — мало"
+			}
+		}
+		rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(label, fmt.Sprintf("st:item:%d:%d", whID, it.ID)),
+		))
+	}
+	rows = append(rows, navKeyboard(true, true).InlineKeyboard[0])
+	kb := tgbotapi.NewInlineKeyboardMarkup(rows...)
+	b.send(tgbotapi.NewEditMessageTextAndMarkup(chatID, editMsgID, "Список материалов:", kb))
+}
+
+func (b *Bot) showStockItem(ctx context.Context, chatID int64, editMsgID int, whID, matID int64) {
+	// берём материал и баланс
+	m, _ := b.materials.GetByID(ctx, matID)
+	if m == nil {
+		b.editTextAndClear(chatID, editMsgID, "Материал не найден")
+		return
+	}
+	bls, _ := b.materials.ListBalancesByWarehouse(ctx, whID)
+	var q float64
+	for _, b := range bls {
+		if b.MaterialID == matID {
+			q = b.Qty
+		}
+	}
+	kb := tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("➕ Приход", fmt.Sprintf("st:in:%d:%d", whID, matID)),
+			tgbotapi.NewInlineKeyboardButtonData("➖ Списание", fmt.Sprintf("st:out:%d:%d", whID, matID)),
+		),
+		navKeyboard(true, true).InlineKeyboard[0],
+	)
+	text := fmt.Sprintf("Склад: %d\nМатериал: %s\nОстаток: %.3f %s", whID, m.Name, q, m.Unit)
+	b.send(tgbotapi.NewEditMessageTextAndMarkup(chatID, editMsgID, text, kb))
+}
+
+// maybeNotifyLowOrNegative Информирование при минусовом/низком остатке (только для материалов в граммах)
+func (b *Bot) maybeNotifyLowOrNegative(ctx context.Context, chatID int64, whID, matID int64) {
+	m, _ := b.materials.GetByID(ctx, matID)
+	if m == nil || m.Unit != materials.UnitG {
+		return
+	}
+	qty, err := b.materials.GetBalance(ctx, whID, matID)
+	if err != nil {
+		return
+	}
+	if qty < 0 {
+		b.send(tgbotapi.NewMessage(chatID, fmt.Sprintf("⚠️ Материалы:\n— %s\nзакончились.", m.Name)))
+	} else if qty < lowStockThresholdGr {
+		b.send(tgbotapi.NewMessage(chatID, fmt.Sprintf("⚠️ Материалы:\n— %s — %.3f g\nзаканчиваются, не забудьте пополнить остаток на складе.", m.Name, qty)))
+	}
 }
 
 /*** ADMIN UI ***/
@@ -445,7 +550,7 @@ func (b *Bot) onMessage(ctx context.Context, upd tgbotapi.Update) {
 	}
 
 	// Кнопки нижней панели для админа
-	if msg.Text == "Список команд" || msg.Text == "Склады" || msg.Text == "Категории" || msg.Text == "Материалы" {
+	if msg.Text == "Список команд" || msg.Text == "Склады" || msg.Text == "Категории" || msg.Text == "Материалы" || msg.Text == "Остатки" {
 		u, _ := b.users.GetByTelegramID(ctx, tgID)
 		if u == nil || u.Role != users.RoleAdmin || u.Status != users.StatusApproved {
 			// игнорируем для не-админов
@@ -463,6 +568,10 @@ func (b *Bot) onMessage(ctx context.Context, upd tgbotapi.Update) {
 		case "Материалы":
 			_ = b.states.Set(ctx, chatID, dialog.StateAdmMatMenu, dialog.Payload{})
 			b.showMaterialMenu(chatID, nil)
+			return
+		case "Остатки":
+			_ = b.states.Set(ctx, chatID, dialog.StateStockPickWh, dialog.Payload{})
+			b.showStockWarehouseList(ctx, chatID, nil)
 			return
 		}
 		return
@@ -570,7 +679,7 @@ func (b *Bot) onMessage(ctx context.Context, upd tgbotapi.Update) {
 		}
 		cidAny := st.Payload["cat_id"]
 		catID := int64(cidAny.(float64))
-		if _, err := b.materials.Create(ctx, name, catID, materials.UnitPcs); err != nil {
+		if _, err := b.materials.Create(ctx, name, catID, materials.UnitG); err != nil {
 			b.send(tgbotapi.NewMessage(chatID, "Ошибка при создании материала"))
 			return
 		}
@@ -594,6 +703,55 @@ func (b *Bot) onMessage(ctx context.Context, upd tgbotapi.Update) {
 		_ = b.states.Set(ctx, chatID, dialog.StateAdmMatMenu, dialog.Payload{})
 		b.send(tgbotapi.NewMessage(chatID, "Материал переименован."))
 		b.showMaterialMenu(chatID, nil)
+		return
+	case dialog.StateStockInQty:
+		qtyStr := strings.TrimSpace(msg.Text)
+		qty, err := strconv.ParseFloat(strings.ReplaceAll(qtyStr, ",", "."), 64)
+		if err != nil || qty <= 0 {
+			b.send(tgbotapi.NewMessage(chatID, "Некорректное число. Введите положительное значение."))
+			return
+		}
+		wh := int64(st.Payload["wh_id"].(float64))
+		mat := int64(st.Payload["mat_id"].(float64))
+		// actorID — ID из users, получим по telegram_id
+		u, _ := b.users.GetByTelegramID(ctx, tgID)
+		if u == nil {
+			b.send(tgbotapi.NewMessage(chatID, "Пользователь не найден"))
+			return
+		}
+		if err := b.inventory.Receive(ctx, u.ID, wh, mat, qty, "bot"); err != nil {
+			b.send(tgbotapi.NewMessage(chatID, "Ошибка прихода: "+err.Error()))
+			return
+		}
+		_ = b.states.Set(ctx, chatID, dialog.StateStockItem, dialog.Payload{"wh_id": float64(wh), "mat_id": float64(mat)})
+		b.send(tgbotapi.NewMessage(chatID, "Приход проведён"))
+		// перерисуем карточку
+		b.showStockItem(ctx, chatID, msg.MessageID, wh, mat)
+		b.maybeNotifyLowOrNegative(ctx, chatID, wh, mat)
+		return
+
+	case dialog.StateStockOutQty:
+		qtyStr := strings.TrimSpace(msg.Text)
+		qty, err := strconv.ParseFloat(strings.ReplaceAll(qtyStr, ",", "."), 64)
+		if err != nil || qty <= 0 {
+			b.send(tgbotapi.NewMessage(chatID, "Некорректное число. Введите положительное значение."))
+			return
+		}
+		wh := int64(st.Payload["wh_id"].(float64))
+		mat := int64(st.Payload["mat_id"].(float64))
+		u, _ := b.users.GetByTelegramID(ctx, tgID)
+		if u == nil {
+			b.send(tgbotapi.NewMessage(chatID, "Пользователь не найден"))
+			return
+		}
+		if err := b.inventory.WriteOff(ctx, u.ID, wh, mat, qty, "bot"); err != nil {
+			b.send(tgbotapi.NewMessage(chatID, "Ошибка списания: "+err.Error()))
+			return
+		}
+		_ = b.states.Set(ctx, chatID, dialog.StateStockItem, dialog.Payload{"wh_id": float64(wh), "mat_id": float64(mat)})
+		b.send(tgbotapi.NewMessage(chatID, "Списание проведено"))
+		b.showStockItem(ctx, chatID, msg.MessageID, wh, mat)
+		b.maybeNotifyLowOrNegative(ctx, chatID, wh, mat)
 		return
 	}
 }
@@ -695,6 +853,28 @@ func (b *Bot) onCallback(ctx context.Context, upd tgbotapi.Update) {
 			// из ввода имени — назад к выбору категории
 			b.showCategoryPick(ctx, fromChat, cb.Message.MessageID)
 			_ = b.states.Set(ctx, fromChat, dialog.StateAdmMatPickCat, dialog.Payload{})
+		case dialog.StateStockList:
+			b.showStockWarehouseList(ctx, fromChat, &cb.Message.MessageID)
+			_ = b.states.Set(ctx, fromChat, dialog.StateStockPickWh, dialog.Payload{})
+		case dialog.StateStockItem:
+			if whAny, ok := st.Payload["wh_id"]; ok {
+				wh := int64(whAny.(float64))
+				b.showStockMaterialList(ctx, fromChat, cb.Message.MessageID, wh)
+				_ = b.states.Set(ctx, fromChat, dialog.StateStockList, dialog.Payload{"wh_id": wh})
+			} else {
+				b.showStockWarehouseList(ctx, fromChat, &cb.Message.MessageID)
+				_ = b.states.Set(ctx, fromChat, dialog.StateStockPickWh, dialog.Payload{})
+			}
+		case dialog.StateStockInQty, dialog.StateStockOutQty:
+			if whAny, ok := st.Payload["wh_id"]; ok {
+				wh := int64(whAny.(float64))
+				mat := int64(st.Payload["mat_id"].(float64))
+				b.showStockItem(ctx, fromChat, cb.Message.MessageID, wh, mat)
+				_ = b.states.Set(ctx, fromChat, dialog.StateStockItem, dialog.Payload{"wh_id": wh, "mat_id": mat})
+			} else {
+				b.showStockWarehouseList(ctx, fromChat, &cb.Message.MessageID)
+				_ = b.states.Set(ctx, fromChat, dialog.StateStockPickWh, dialog.Payload{})
+			}
 
 		default:
 			b.editTextAndClear(fromChat, cb.Message.MessageID, "Действие неактуально.")
@@ -1039,6 +1219,48 @@ func (b *Bot) onCallback(ctx context.Context, upd tgbotapi.Update) {
 		kb := b.unitKeyboard(id)
 		edit := tgbotapi.NewEditMessageTextAndMarkup(fromChat, cb.Message.MessageID, "Выберите единицу измерения:", kb)
 		b.send(edit)
+		_ = b.answerCallback(cb, "Ок", false)
+		return
+
+		// Остатки: выбор склада -> список
+	case strings.HasPrefix(data, "st:list:"):
+		whID, _ := strconv.ParseInt(strings.TrimPrefix(data, "st:list:"), 10, 64)
+		_ = b.states.Set(ctx, fromChat, dialog.StateStockList, dialog.Payload{"wh_id": whID})
+		b.showStockMaterialList(ctx, fromChat, cb.Message.MessageID, whID)
+		_ = b.answerCallback(cb, "Ок", false)
+		return
+
+		// Выбор строки из списка -> карточка
+	case strings.HasPrefix(data, "st:item:"):
+		parts := strings.Split(strings.TrimPrefix(data, "st:item:"), ":")
+		if len(parts) != 2 {
+			_ = b.answerCallback(cb, "Некорректные данные", true)
+			return
+		}
+		whID, _ := strconv.ParseInt(parts[0], 10, 64)
+		matID, _ := strconv.ParseInt(parts[1], 10, 64)
+		_ = b.states.Set(ctx, fromChat, dialog.StateStockItem, dialog.Payload{"wh_id": whID, "mat_id": matID})
+		b.showStockItem(ctx, fromChat, cb.Message.MessageID, whID, matID)
+		_ = b.answerCallback(cb, "Ок", false)
+		return
+
+		// Приход: запрос количества
+	case strings.HasPrefix(data, "st:in:"):
+		parts := strings.Split(strings.TrimPrefix(data, "st:in:"), ":")
+		whID, _ := strconv.ParseInt(parts[0], 10, 64)
+		matID, _ := strconv.ParseInt(parts[1], 10, 64)
+		_ = b.states.Set(ctx, fromChat, dialog.StateStockInQty, dialog.Payload{"wh_id": whID, "mat_id": matID})
+		b.editTextWithNav(fromChat, cb.Message.MessageID, "Введите количество для прихода (число, например 10.5)")
+		_ = b.answerCallback(cb, "Ок", false)
+		return
+
+		// Списание: запрос количества
+	case strings.HasPrefix(data, "st:out:"):
+		parts := strings.Split(strings.TrimPrefix(data, "st:out:"), ":")
+		whID, _ := strconv.ParseInt(parts[0], 10, 64)
+		matID, _ := strconv.ParseInt(parts[1], 10, 64)
+		_ = b.states.Set(ctx, fromChat, dialog.StateStockOutQty, dialog.Payload{"wh_id": whID, "mat_id": matID})
+		b.editTextWithNav(fromChat, cb.Message.MessageID, "Введите количество для списания (число, например 3)")
 		_ = b.answerCallback(cb, "Ок", false)
 		return
 	}
