@@ -999,15 +999,6 @@ func (b *Bot) onCallback(ctx context.Context, upd tgbotapi.Update) {
 		_ = b.answerCallback(cb, "Готово", false)
 		return
 
-	case strings.HasPrefix(data, "adm:mat:unit:"):
-		id, _ := strconv.ParseInt(strings.TrimPrefix(data, "adm:mat:unit:"), 10, 64)
-		_ = b.states.Set(ctx, fromChat, dialog.StateAdmMatUnit, dialog.Payload{"mat_id": id})
-		kb := b.unitKeyboard(id)
-		edit := tgbotapi.NewEditMessageTextAndMarkup(fromChat, cb.Message.MessageID, "Выберите единицу измерения:", kb)
-		b.send(edit)
-		_ = b.answerCallback(cb, "Ок", false)
-		return
-
 	case strings.HasPrefix(data, "adm:mat:unit:set:"):
 		// формат: adm:mat:unit:set:<id>:<unit>
 		payload := strings.TrimPrefix(data, "adm:mat:unit:set:")
@@ -1017,7 +1008,7 @@ func (b *Bot) onCallback(ctx context.Context, upd tgbotapi.Update) {
 			return
 		}
 		id, err := strconv.ParseInt(parts[0], 10, 64)
-		if err != nil {
+		if err != nil || id <= 0 {
 			_ = b.answerCallback(cb, "Некорректный ID", true)
 			return
 		}
@@ -1027,10 +1018,28 @@ func (b *Bot) onCallback(ctx context.Context, upd tgbotapi.Update) {
 			_ = b.answerCallback(cb, "Ошибка", true)
 			return
 		}
-		// Сразу показываем карточку и фиксируем состояние — чтобы Back вернул в карточку
+		// Показать карточку и зафиксировать состояние, чтобы Back вернул в неё
 		b.showMaterialItemMenu(ctx, fromChat, cb.Message.MessageID, id)
 		_ = b.states.Set(ctx, fromChat, dialog.StateAdmMatItem, dialog.Payload{"mat_id": id})
 		_ = b.answerCallback(cb, "Обновлено", false)
+		return
+
+	case strings.HasPrefix(data, "adm:mat:unit:"):
+		tail := strings.TrimPrefix(data, "adm:mat:unit:")
+		if strings.HasPrefix(tail, "set:") {
+			// этот колбэк обрабатывается в кейсе выше
+			return
+		}
+		id, err := strconv.ParseInt(tail, 10, 64)
+		if err != nil || id <= 0 {
+			_ = b.answerCallback(cb, "Некорректные данные", true)
+			return
+		}
+		_ = b.states.Set(ctx, fromChat, dialog.StateAdmMatUnit, dialog.Payload{"mat_id": id})
+		kb := b.unitKeyboard(id)
+		edit := tgbotapi.NewEditMessageTextAndMarkup(fromChat, cb.Message.MessageID, "Выберите единицу измерения:", kb)
+		b.send(edit)
+		_ = b.answerCallback(cb, "Ок", false)
 		return
 	}
 }
