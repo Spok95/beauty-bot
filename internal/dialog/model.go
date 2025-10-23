@@ -31,6 +31,13 @@ const (
 	StateAdmMatName    State = "adm_mat_name"
 	StateAdmMatUnit    State = "adm_mat_unit"
 	StateAdmMatRename  State = "adm_mat_rename"
+
+	// Остатки/движения
+	StateStockPickWh State = "stock_pick_wh"
+	StateStockList   State = "stock_list"    // список материалов с остатком в выбранном складе
+	StateStockItem   State = "stock_item"    // карточка материала (остаток + действия)
+	StateStockInQty  State = "stock_in_qty"  // ввод количества для прихода
+	StateStockOutQty State = "stock_out_qty" // ввод количества для списания
 )
 
 type Payload map[string]any

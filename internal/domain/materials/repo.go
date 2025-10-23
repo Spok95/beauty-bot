@@ -146,3 +146,48 @@ func (r *Repo) ListBalancesByWarehouse(ctx context.Context, warehouseID int64) (
 	}
 	return out, nil
 }
+
+type MatWithBal struct {
+	ID         int64
+	Name       string
+	Unit       Unit
+	Balance    int64
+	CategoryID int64
+}
+
+func (r *Repo) ListWithBalanceByWarehouse(ctx context.Context, warehouseID int64) ([]MatWithBal, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT m.id, m.name, m.unit, COALESCE(b.qty,0), m.category_id
+		FROM materials m
+		LEFT JOIN balances b ON b.material_id = m.id AND b.warehouse_id = $1
+		ORDER BY m.name
+	`, warehouseID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []MatWithBal
+	for rows.Next() {
+		var it MatWithBal
+		if err := rows.Scan(&it.ID, &it.Name, &it.Unit, &it.Balance, &it.CategoryID); err != nil {
+			return nil, err
+		}
+		out = append(out, it)
+	}
+	return out, nil
+}
+
+// GetBalance Возврат остатка по складу/материалу (может быть отрицательным)
+func (r *Repo) GetBalance(ctx context.Context, warehouseID, materialID int64) (float64, error) {
+	row := r.pool.QueryRow(ctx, `
+		SELECT COALESCE((
+			SELECT qty FROM balances WHERE warehouse_id=$1 AND material_id=$2
+		), 0)
+	`, warehouseID, materialID)
+	var q float64
+	if err := row.Scan(&q); err != nil {
+		return 0, err
+	}
+	return q, nil
+}
