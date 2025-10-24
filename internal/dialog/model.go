@@ -45,6 +45,7 @@ const (
 	StateSupPickMat   State = "sup_pick_mat"
 	StateSupQty       State = "sup_qty"
 	StateSupUnitPrice State = "sup_unit_price"
+	StateSupCart      State = "sup_cart" // НОВОЕ: корзина с позициями
 	StateSupConfirm   State = "sup_confirm"
 )
 
