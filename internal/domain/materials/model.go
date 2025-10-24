@@ -10,12 +10,13 @@ const (
 )
 
 type Material struct {
-	ID         int64
-	Name       string
-	CategoryID int64
-	Unit       Unit
-	Active     bool
-	CreatedAt  time.Time
+	ID           int64
+	Name         string
+	CategoryID   int64
+	Unit         Unit
+	Active       bool
+	CreatedAt    time.Time
+	PricePerUnit float64 // ₽ за g / шт
 }
 
 type Balance struct {

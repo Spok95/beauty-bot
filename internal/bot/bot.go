@@ -131,6 +131,7 @@ func adminReplyKeyboard() tgbotapi.ReplyKeyboardMarkup {
 			{tgbotapi.NewKeyboardButton("Склады"), tgbotapi.NewKeyboardButton("Категории")},
 			{tgbotapi.NewKeyboardButton("Материалы")},
 			{tgbotapi.NewKeyboardButton("Остатки")},
+			{tgbotapi.NewKeyboardButton("Поставки")},
 		},
 	}
 }
@@ -477,6 +478,122 @@ func (b *Bot) showStockItem(ctx context.Context, chatID int64, editMsgID int, wh
 	b.send(tgbotapi.NewEditMessageTextAndMarkup(chatID, editMsgID, text, kb))
 }
 
+func (b *Bot) showSuppliesMenu(chatID int64, editMsgID *int) {
+	kb := tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("➕ Приёмка", "sup:add"),
+			tgbotapi.NewInlineKeyboardButtonData("📄 Журнал", "sup:list"),
+		),
+		navKeyboard(false, true).InlineKeyboard[0],
+	)
+	if editMsgID != nil {
+		b.send(tgbotapi.NewEditMessageTextAndMarkup(chatID, *editMsgID, "Поставки — выберите действие", kb))
+	} else {
+		m := tgbotapi.NewMessage(chatID, "Поставки — выберите действие")
+		m.ReplyMarkup = kb
+		b.send(m)
+	}
+}
+
+func (b *Bot) showSuppliesPickWarehouse(ctx context.Context, chatID int64, editMsgID int) {
+	ws, err := b.catalog.ListWarehouses(ctx)
+	if err != nil {
+		b.editTextAndClear(chatID, editMsgID, "Ошибка загрузки складов")
+		return
+	}
+	rows := [][]tgbotapi.InlineKeyboardButton{}
+	for _, w := range ws {
+		if !w.Active {
+			continue
+		}
+		rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(w.Name, fmt.Sprintf("sup:wh:%d", w.ID)),
+		))
+	}
+	rows = append(rows, navKeyboard(true, true).InlineKeyboard[0])
+	kb := tgbotapi.NewInlineKeyboardMarkup(rows...)
+	b.send(tgbotapi.NewEditMessageTextAndMarkup(chatID, editMsgID, "Выберите склад:", kb))
+}
+
+func (b *Bot) showSuppliesPickMaterial(ctx context.Context, chatID int64, editMsgID int) {
+	mats, err := b.materials.List(ctx, true) // только активные
+	if err != nil {
+		b.editTextAndClear(chatID, editMsgID, "Ошибка загрузки материалов")
+		return
+	}
+	rows := [][]tgbotapi.InlineKeyboardButton{}
+	for _, m := range mats {
+		rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(m.Name, fmt.Sprintf("sup:mat:%d", m.ID)),
+		))
+	}
+	rows = append(rows, navKeyboard(true, true).InlineKeyboard[0])
+	kb := tgbotapi.NewInlineKeyboardMarkup(rows...)
+	b.send(tgbotapi.NewEditMessageTextAndMarkup(chatID, editMsgID, "Выберите материал:", kb))
+}
+
+// parseSupItems достаёт []map[string]any из payload["items"]
+func (b *Bot) parseSupItems(v any) []map[string]any {
+	items := []map[string]any{}
+	arr, ok := v.([]any)
+	if !ok {
+		if mm, ok2 := v.([]map[string]any); ok2 {
+			return mm
+		}
+		return items
+	}
+	for _, e := range arr {
+		if m, ok := e.(map[string]any); ok {
+			items = append(items, m)
+		}
+	}
+	return items
+}
+
+// Показ корзины поставки: список позиций и итог
+func (b *Bot) showSuppliesCart(ctx context.Context, chatID int64, editMsgID *int, whID int64, items []map[string]any) {
+	// имя склада
+	whName := fmt.Sprintf("ID:%d", whID)
+	if w, _ := b.catalog.GetWarehouseByID(ctx, whID); w != nil {
+		whName = w.Name
+	}
+
+	lines := []string{fmt.Sprintf("Поставка (склад: %s):", whName)}
+	var total float64
+	for _, it := range items {
+		matID := int64(it["mat_id"].(float64))
+		qty := int64(it["qty"].(float64))
+		price := it["price"].(float64)
+		name := fmt.Sprintf("ID:%d", matID)
+		if m, _ := b.materials.GetByID(ctx, matID); m != nil {
+			name = m.Name
+		}
+		lineTotal := float64(qty) * price
+		total += lineTotal
+		lines = append(lines, fmt.Sprintf("• %s — %d × %.2f = %.2f ₽", name, qty, price, lineTotal))
+	}
+	lines = append(lines, fmt.Sprintf("\nИтого: %.2f ₽", total))
+
+	kb := tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("➕ Добавить позицию", "sup:additem"),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("✅ Провести", "sup:confirm"),
+		),
+		navKeyboard(true, true).InlineKeyboard[0],
+	)
+
+	text := strings.Join(lines, "\n")
+	if editMsgID != nil {
+		b.send(tgbotapi.NewEditMessageTextAndMarkup(chatID, *editMsgID, text, kb))
+	} else {
+		m := tgbotapi.NewMessage(chatID, text)
+		m.ReplyMarkup = kb
+		b.send(m)
+	}
+}
+
 // maybeNotifyLowOrNegative Информирование при минусовом/низком остатке (только для материалов в граммах)
 func (b *Bot) maybeNotifyLowOrNegative(ctx context.Context, chatID int64, whID, matID int64) {
 	m, _ := b.materials.GetByID(ctx, matID)
@@ -585,7 +702,7 @@ func (b *Bot) onMessage(ctx context.Context, upd tgbotapi.Update) {
 	}
 
 	// Кнопки нижней панели для админа
-	if msg.Text == "Список команд" || msg.Text == "Склады" || msg.Text == "Категории" || msg.Text == "Материалы" || msg.Text == "Остатки" {
+	if msg.Text == "Список команд" || msg.Text == "Склады" || msg.Text == "Категории" || msg.Text == "Материалы" || msg.Text == "Остатки" || msg.Text == "Поставки" {
 		u, _ := b.users.GetByTelegramID(ctx, tgID)
 		if u == nil || u.Role != users.RoleAdmin || u.Status != users.StatusApproved {
 			// игнорируем для не-админов
@@ -607,6 +724,10 @@ func (b *Bot) onMessage(ctx context.Context, upd tgbotapi.Update) {
 		case "Остатки":
 			_ = b.states.Set(ctx, chatID, dialog.StateStockPickWh, dialog.Payload{})
 			b.showStockWarehouseList(ctx, chatID, nil)
+			return
+		case "Поставки":
+			_ = b.states.Set(ctx, chatID, dialog.StateSupMenu, dialog.Payload{})
+			b.showSuppliesMenu(chatID, nil)
 			return
 		}
 		return
@@ -788,6 +909,50 @@ func (b *Bot) onMessage(ctx context.Context, upd tgbotapi.Update) {
 		b.showStockItem(ctx, chatID, msg.MessageID, wh, mat)
 		b.maybeNotifyLowOrNegative(ctx, chatID, wh, mat)
 		return
+
+	case dialog.StateSupQty:
+		qtyStr := strings.TrimSpace(msg.Text)
+		qtyStr = strings.ReplaceAll(qtyStr, ",", ".")
+		// только целые числа: граммы/шт, без дробной части
+		if strings.Contains(qtyStr, ".") {
+			b.send(tgbotapi.NewMessage(chatID, "Введите целое число без дробной части (используем граммы/шт)."))
+			return
+		}
+		n, err := strconv.ParseInt(qtyStr, 10, 64)
+		if err != nil || n <= 0 {
+			b.send(tgbotapi.NewMessage(chatID, "Некорректное число. Введите целое положительное значение."))
+			return
+		}
+		// сохраняем целое значение; payload сериализуется как float64 — это ок
+		st.Payload["qty"] = float64(n)
+		_ = b.states.Set(ctx, chatID, dialog.StateSupUnitPrice, st.Payload)
+		b.send(tgbotapi.NewMessage(chatID, "Введите цену за единицу (руб)"))
+		return
+
+	case dialog.StateSupUnitPrice:
+		priceStr := strings.TrimSpace(msg.Text)
+		price, err := strconv.ParseFloat(strings.ReplaceAll(priceStr, ",", "."), 64)
+		if err != nil || price < 0 {
+			b.send(tgbotapi.NewMessage(chatID, "Некорректное число. Введите цену (руб)."))
+			return
+		}
+		wh := int64(st.Payload["wh_id"].(float64))
+		mat := int64(st.Payload["mat_id"].(float64))
+		qty := int64(st.Payload["qty"].(float64)) // мы сохраняли как float64, но значение целое
+
+		// Добавляем позицию в payload["items"]
+		items := b.parseSupItems(st.Payload["items"])
+		items = append(items, map[string]any{
+			"mat_id": float64(mat), // через float64, чтобы без проблем сериализовалось
+			"qty":    float64(qty),
+			"price":  price,
+		})
+		st.Payload["items"] = items
+
+		// Переходим в корзину
+		_ = b.states.Set(ctx, chatID, dialog.StateSupCart, st.Payload)
+		b.showSuppliesCart(ctx, chatID, nil, wh, items)
+		return
 	}
 }
 
@@ -910,6 +1075,44 @@ func (b *Bot) onCallback(ctx context.Context, upd tgbotapi.Update) {
 				b.showStockWarehouseList(ctx, fromChat, &cb.Message.MessageID)
 				_ = b.states.Set(ctx, fromChat, dialog.StateStockPickWh, dialog.Payload{})
 			}
+		case dialog.StateSupPickWh, dialog.StateSupMenu:
+			b.showSuppliesMenu(fromChat, &cb.Message.MessageID)
+			_ = b.states.Set(ctx, fromChat, dialog.StateSupMenu, dialog.Payload{})
+		case dialog.StateSupPickMat:
+			b.showSuppliesPickWarehouse(ctx, fromChat, cb.Message.MessageID)
+			_ = b.states.Set(ctx, fromChat, dialog.StateSupPickWh, dialog.Payload{})
+		case dialog.StateSupQty:
+			b.showSuppliesPickMaterial(ctx, fromChat, cb.Message.MessageID)
+			_ = b.states.Set(ctx, fromChat, dialog.StateSupPickMat, st.Payload)
+		case dialog.StateSupUnitPrice:
+			b.editTextWithNav(fromChat, cb.Message.MessageID, "Введите количество (число, например 250)")
+			_ = b.states.Set(ctx, fromChat, dialog.StateSupQty, st.Payload)
+		case dialog.StateSupConfirm:
+			b.editTextWithNav(fromChat, cb.Message.MessageID, "Введите цену за единицу (руб)")
+			_ = b.states.Set(ctx, fromChat, dialog.StateSupUnitPrice, st.Payload)
+		case dialog.StateSupCart:
+			// Возврат к редактированию последней добавленной позиции
+			items := b.parseSupItems(st.Payload["items"])
+			if len(items) == 0 {
+				// Корзина пуста — вернём меню поставок
+				_ = b.states.Set(ctx, fromChat, dialog.StateSupMenu, dialog.Payload{})
+				b.showSuppliesMenu(fromChat, &cb.Message.MessageID)
+				return
+			}
+			last := items[len(items)-1]
+			// Удаляем последнюю позицию из корзины — будем вводить её заново
+			items = items[:len(items)-1]
+
+			// Собираем payload для шага ввода цены (предыдущий шаг после qty)
+			payload := dialog.Payload{
+				"wh_id":  st.Payload["wh_id"],
+				"mat_id": last["mat_id"],
+				"qty":    last["qty"],
+				"items":  items,
+			}
+			_ = b.states.Set(ctx, fromChat, dialog.StateSupUnitPrice, payload)
+			b.editTextWithNav(fromChat, cb.Message.MessageID, "Введите цену за единицу (руб)")
+			return
 
 		default:
 			b.editTextAndClear(fromChat, cb.Message.MessageID, "Действие неактуально.")
@@ -1297,6 +1500,86 @@ func (b *Bot) onCallback(ctx context.Context, upd tgbotapi.Update) {
 		_ = b.states.Set(ctx, fromChat, dialog.StateStockOutQty, dialog.Payload{"wh_id": whID, "mat_id": matID})
 		b.editTextWithNav(fromChat, cb.Message.MessageID, "Введите количество для списания (число, например 3)")
 		_ = b.answerCallback(cb, "Ок", false)
+		return
+
+		// Поставки
+	case data == "sup:add":
+		_ = b.states.Set(ctx, fromChat, dialog.StateSupPickWh, dialog.Payload{})
+		b.showSuppliesPickWarehouse(ctx, fromChat, cb.Message.MessageID)
+		_ = b.answerCallback(cb, "Ок", false)
+		return
+
+	case data == "sup:additem":
+		st, _ := b.states.Get(ctx, fromChat)
+		_ = b.states.Set(ctx, fromChat, dialog.StateSupPickMat, st.Payload) // wh_id и items остаются
+		b.showSuppliesPickMaterial(ctx, fromChat, cb.Message.MessageID)
+		_ = b.answerCallback(cb, "Ок", false)
+		return
+
+	case strings.HasPrefix(data, "sup:wh:"):
+		whID, _ := strconv.ParseInt(strings.TrimPrefix(data, "sup:wh:"), 10, 64)
+		_ = b.states.Set(ctx, fromChat, dialog.StateSupPickMat, dialog.Payload{"wh_id": whID})
+		b.showSuppliesPickMaterial(ctx, fromChat, cb.Message.MessageID)
+		_ = b.answerCallback(cb, "Ок", false)
+		return
+
+	case strings.HasPrefix(data, "sup:mat:"):
+		matID, _ := strconv.ParseInt(strings.TrimPrefix(data, "sup:mat:"), 10, 64)
+		st, _ := b.states.Get(ctx, fromChat)
+		wh := int64(st.Payload["wh_id"].(float64))
+		// ВАЖНО: переносим корзину, иначе она теряется
+		payload := dialog.Payload{
+			"wh_id":  wh,
+			"mat_id": matID,
+		}
+		if items, ok := st.Payload["items"]; ok {
+			payload["items"] = items
+		}
+		_ = b.states.Set(ctx, fromChat, dialog.StateSupQty, payload)
+		b.editTextWithNav(fromChat, cb.Message.MessageID, "Введите количество (число, например 250 или 3.5)")
+		_ = b.answerCallback(cb, "Ок", false)
+		return
+
+	case data == "sup:list":
+		b.editTextAndClear(fromChat, cb.Message.MessageID, "Журнал поставок: добавим позже (период/экспорт).")
+		_ = b.answerCallback(cb, "Ок", false)
+		return
+
+	case data == "sup:confirm":
+		st, _ := b.states.Get(ctx, fromChat)
+		wh := int64(st.Payload["wh_id"].(float64))
+		items := b.parseSupItems(st.Payload["items"])
+		if len(items) == 0 {
+			b.editTextAndClear(fromChat, cb.Message.MessageID, "Корзина пуста. Добавьте хотя бы одну позицию.")
+			_ = b.answerCallback(cb, "Пусто", true)
+			return
+		}
+		u, err := b.users.GetByTelegramID(ctx, cb.From.ID)
+		if err != nil || u == nil {
+			b.editTextAndClear(fromChat, cb.Message.MessageID, "Пользователь не найден")
+			_ = b.answerCallback(cb, "Ошибка", true)
+			return
+		}
+
+		// Проводим каждую позицию одной транзакцией на позицию
+		for _, it := range items {
+			mat := int64(it["mat_id"].(float64))
+			qty := int64(it["qty"].(float64))
+			price := it["price"].(float64)
+			if err := b.inventory.ReceiveWithCost(ctx, u.ID, wh, mat, float64(qty), price, "supply"); err != nil {
+				b.editTextAndClear(fromChat, cb.Message.MessageID, "Ошибка приёмки: "+err.Error())
+				_ = b.answerCallback(cb, "Ошибка", true)
+				return
+			}
+			// Обновим цену на последнюю закупочную
+			_, _ = b.materials.UpdatePrice(ctx, mat, price)
+		}
+
+		// Очистим корзину и вернёмся в меню поставок
+		b.editTextAndClear(fromChat, cb.Message.MessageID, "Поставка проведена.")
+		_ = b.states.Set(ctx, fromChat, dialog.StateSupMenu, dialog.Payload{})
+		b.showSuppliesMenu(fromChat, nil)
+		_ = b.answerCallback(cb, "Готово", false)
 		return
 	}
 }
