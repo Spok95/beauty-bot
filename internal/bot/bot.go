@@ -131,6 +131,7 @@ func adminReplyKeyboard() tgbotapi.ReplyKeyboardMarkup {
 			{tgbotapi.NewKeyboardButton("Склады"), tgbotapi.NewKeyboardButton("Категории")},
 			{tgbotapi.NewKeyboardButton("Материалы")},
 			{tgbotapi.NewKeyboardButton("Остатки")},
+			{tgbotapi.NewKeyboardButton("Поставки")},
 		},
 	}
 }
@@ -477,6 +478,60 @@ func (b *Bot) showStockItem(ctx context.Context, chatID int64, editMsgID int, wh
 	b.send(tgbotapi.NewEditMessageTextAndMarkup(chatID, editMsgID, text, kb))
 }
 
+func (b *Bot) showSuppliesMenu(chatID int64, editMsgID *int) {
+	kb := tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("➕ Приёмка", "sup:add"),
+			tgbotapi.NewInlineKeyboardButtonData("📄 Журнал", "sup:list"),
+		),
+		navKeyboard(false, true).InlineKeyboard[0],
+	)
+	if editMsgID != nil {
+		b.send(tgbotapi.NewEditMessageTextAndMarkup(chatID, *editMsgID, "Поставки — выберите действие", kb))
+	} else {
+		m := tgbotapi.NewMessage(chatID, "Поставки — выберите действие")
+		m.ReplyMarkup = kb
+		b.send(m)
+	}
+}
+
+func (b *Bot) showSuppliesPickWarehouse(ctx context.Context, chatID int64, editMsgID int) {
+	ws, err := b.catalog.ListWarehouses(ctx)
+	if err != nil {
+		b.editTextAndClear(chatID, editMsgID, "Ошибка загрузки складов")
+		return
+	}
+	rows := [][]tgbotapi.InlineKeyboardButton{}
+	for _, w := range ws {
+		if !w.Active {
+			continue
+		}
+		rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(w.Name, fmt.Sprintf("sup:wh:%d", w.ID)),
+		))
+	}
+	rows = append(rows, navKeyboard(true, true).InlineKeyboard[0])
+	kb := tgbotapi.NewInlineKeyboardMarkup(rows...)
+	b.send(tgbotapi.NewEditMessageTextAndMarkup(chatID, editMsgID, "Выберите склад:", kb))
+}
+
+func (b *Bot) showSuppliesPickMaterial(ctx context.Context, chatID int64, editMsgID int) {
+	mats, err := b.materials.List(ctx, true) // только активные
+	if err != nil {
+		b.editTextAndClear(chatID, editMsgID, "Ошибка загрузки материалов")
+		return
+	}
+	rows := [][]tgbotapi.InlineKeyboardButton{}
+	for _, m := range mats {
+		rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(m.Name, fmt.Sprintf("sup:mat:%d", m.ID)),
+		))
+	}
+	rows = append(rows, navKeyboard(true, true).InlineKeyboard[0])
+	kb := tgbotapi.NewInlineKeyboardMarkup(rows...)
+	b.send(tgbotapi.NewEditMessageTextAndMarkup(chatID, editMsgID, "Выберите материал:", kb))
+}
+
 // maybeNotifyLowOrNegative Информирование при минусовом/низком остатке (только для материалов в граммах)
 func (b *Bot) maybeNotifyLowOrNegative(ctx context.Context, chatID int64, whID, matID int64) {
 	m, _ := b.materials.GetByID(ctx, matID)
@@ -585,7 +640,7 @@ func (b *Bot) onMessage(ctx context.Context, upd tgbotapi.Update) {
 	}
 
 	// Кнопки нижней панели для админа
-	if msg.Text == "Список команд" || msg.Text == "Склады" || msg.Text == "Категории" || msg.Text == "Материалы" || msg.Text == "Остатки" {
+	if msg.Text == "Список команд" || msg.Text == "Склады" || msg.Text == "Категории" || msg.Text == "Материалы" || msg.Text == "Остатки" || msg.Text == "Поставки" {
 		u, _ := b.users.GetByTelegramID(ctx, tgID)
 		if u == nil || u.Role != users.RoleAdmin || u.Status != users.StatusApproved {
 			// игнорируем для не-админов
@@ -607,6 +662,10 @@ func (b *Bot) onMessage(ctx context.Context, upd tgbotapi.Update) {
 		case "Остатки":
 			_ = b.states.Set(ctx, chatID, dialog.StateStockPickWh, dialog.Payload{})
 			b.showStockWarehouseList(ctx, chatID, nil)
+			return
+		case "Поставки":
+			_ = b.states.Set(ctx, chatID, dialog.StateSupMenu, dialog.Payload{})
+			b.showSuppliesMenu(chatID, nil)
 			return
 		}
 		return
@@ -788,6 +847,66 @@ func (b *Bot) onMessage(ctx context.Context, upd tgbotapi.Update) {
 		b.showStockItem(ctx, chatID, msg.MessageID, wh, mat)
 		b.maybeNotifyLowOrNegative(ctx, chatID, wh, mat)
 		return
+
+	case dialog.StateSupQty:
+		qtyStr := strings.TrimSpace(msg.Text)
+		qtyStr = strings.ReplaceAll(qtyStr, ",", ".")
+		// только целые числа: граммы/шт, без дробной части
+		if strings.Contains(qtyStr, ".") {
+			b.send(tgbotapi.NewMessage(chatID, "Введите целое число без дробной части (используем граммы/шт)."))
+			return
+		}
+		n, err := strconv.ParseInt(qtyStr, 10, 64)
+		if err != nil || n <= 0 {
+			b.send(tgbotapi.NewMessage(chatID, "Некорректное число. Введите целое положительное значение."))
+			return
+		}
+		// сохраняем целое значение; payload сериализуется как float64 — это ок
+		st.Payload["qty"] = float64(n)
+		_ = b.states.Set(ctx, chatID, dialog.StateSupUnitPrice, st.Payload)
+		b.send(tgbotapi.NewMessage(chatID, "Введите цену за единицу (руб)"))
+		return
+
+	case dialog.StateSupUnitPrice:
+		priceStr := strings.TrimSpace(msg.Text)
+		price, err := strconv.ParseFloat(strings.ReplaceAll(priceStr, ",", "."), 64)
+		if err != nil || price < 0 {
+			b.send(tgbotapi.NewMessage(chatID, "Некорректное число. Введите цену (руб)."))
+			return
+		}
+		wh := int64(st.Payload["wh_id"].(float64))
+		mat := int64(st.Payload["mat_id"].(float64))
+		qty := st.Payload["qty"].(float64)
+
+		// Человеко-читаемые названия
+		whName := fmt.Sprintf("ID:%d", wh)
+		if w, _ := b.catalog.GetWarehouseByID(ctx, wh); w != nil {
+			whName = w.Name
+		}
+		matName := fmt.Sprintf("ID:%d", mat)
+		if m, _ := b.materials.GetByID(ctx, mat); m != nil {
+			matName = m.Name
+		}
+
+		total := price * qty
+		kb := tgbotapi.NewInlineKeyboardMarkup(
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("✅ Провести", "sup:confirm"),
+			),
+			navKeyboard(true, true).InlineKeyboard[0],
+		)
+		_ = b.states.Set(ctx, chatID, dialog.StateSupConfirm, dialog.Payload{
+			"wh_id": wh, "mat_id": mat, "qty": qty, "price": price,
+		})
+
+		msgText := fmt.Sprintf(
+			"Поставка:\nСклад: %s\nМатериал: %s\nКол-во: %d\nЦена за ед.: %.2f ₽\nИтого: %.2f ₽",
+			whName, matName, int64(qty), price, total,
+		)
+		m := tgbotapi.NewMessage(chatID, msgText)
+		m.ReplyMarkup = kb
+		b.send(m)
+		return
 	}
 }
 
@@ -797,6 +916,7 @@ func (b *Bot) onCallback(ctx context.Context, upd tgbotapi.Update) {
 	cb := upd.CallbackQuery
 	data := cb.Data
 	fromChat := cb.Message.Chat.ID
+	fromID := cb.From.ID
 
 	// Общая навигация
 	if data == "nav:cancel" {
@@ -910,6 +1030,21 @@ func (b *Bot) onCallback(ctx context.Context, upd tgbotapi.Update) {
 				b.showStockWarehouseList(ctx, fromChat, &cb.Message.MessageID)
 				_ = b.states.Set(ctx, fromChat, dialog.StateStockPickWh, dialog.Payload{})
 			}
+		case dialog.StateSupPickWh, dialog.StateSupMenu:
+			b.showSuppliesMenu(fromChat, &cb.Message.MessageID)
+			_ = b.states.Set(ctx, fromChat, dialog.StateSupMenu, dialog.Payload{})
+		case dialog.StateSupPickMat:
+			b.showSuppliesPickWarehouse(ctx, fromChat, cb.Message.MessageID)
+			_ = b.states.Set(ctx, fromChat, dialog.StateSupPickWh, dialog.Payload{})
+		case dialog.StateSupQty:
+			b.showSuppliesPickMaterial(ctx, fromChat, cb.Message.MessageID)
+			_ = b.states.Set(ctx, fromChat, dialog.StateSupPickMat, st.Payload)
+		case dialog.StateSupUnitPrice:
+			b.editTextWithNav(fromChat, cb.Message.MessageID, "Введите количество (число, например 250)")
+			_ = b.states.Set(ctx, fromChat, dialog.StateSupQty, st.Payload)
+		case dialog.StateSupConfirm:
+			b.editTextWithNav(fromChat, cb.Message.MessageID, "Введите цену за единицу (руб)")
+			_ = b.states.Set(ctx, fromChat, dialog.StateSupUnitPrice, st.Payload)
 
 		default:
 			b.editTextAndClear(fromChat, cb.Message.MessageID, "Действие неактуально.")
@@ -1297,6 +1432,67 @@ func (b *Bot) onCallback(ctx context.Context, upd tgbotapi.Update) {
 		_ = b.states.Set(ctx, fromChat, dialog.StateStockOutQty, dialog.Payload{"wh_id": whID, "mat_id": matID})
 		b.editTextWithNav(fromChat, cb.Message.MessageID, "Введите количество для списания (число, например 3)")
 		_ = b.answerCallback(cb, "Ок", false)
+		return
+
+		// Поставки
+	case data == "sup:add":
+		_ = b.states.Set(ctx, fromChat, dialog.StateSupPickWh, dialog.Payload{})
+		b.showSuppliesPickWarehouse(ctx, fromChat, cb.Message.MessageID)
+		_ = b.answerCallback(cb, "Ок", false)
+		return
+
+	case strings.HasPrefix(data, "sup:wh:"):
+		whID, _ := strconv.ParseInt(strings.TrimPrefix(data, "sup:wh:"), 10, 64)
+		_ = b.states.Set(ctx, fromChat, dialog.StateSupPickMat, dialog.Payload{"wh_id": whID})
+		b.showSuppliesPickMaterial(ctx, fromChat, cb.Message.MessageID)
+		_ = b.answerCallback(cb, "Ок", false)
+		return
+
+	case strings.HasPrefix(data, "sup:mat:"):
+		matID, _ := strconv.ParseInt(strings.TrimPrefix(data, "sup:mat:"), 10, 64)
+		st, _ := b.states.Get(ctx, fromChat)
+		wh := int64(st.Payload["wh_id"].(float64))
+		_ = b.states.Set(ctx, fromChat, dialog.StateSupQty, dialog.Payload{"wh_id": wh, "mat_id": matID})
+		b.editTextWithNav(fromChat, cb.Message.MessageID, "Введите количество (число, например 250 или 3.5)")
+		_ = b.answerCallback(cb, "Ок", false)
+		return
+
+	case data == "sup:list":
+		b.editTextAndClear(fromChat, cb.Message.MessageID, "Журнал поставок: добавим позже (период/экспорт).")
+		_ = b.answerCallback(cb, "Ок", false)
+		return
+
+	case data == "sup:confirm":
+		st, _ := b.states.Get(ctx, fromChat)
+		wh := int64(st.Payload["wh_id"].(float64))
+		mat := int64(st.Payload["mat_id"].(float64))
+		qty := st.Payload["qty"].(float64)
+		price := st.Payload["price"].(float64)
+
+		// fromID — это cb.From.ID (user id), fromChat — cb.Message.Chat.ID (chat id)
+		u, err := b.users.GetByTelegramID(ctx, fromID)
+		if err != nil || u == nil {
+			b.editTextAndClear(fromChat, cb.Message.MessageID, "Пользователь не найден")
+			_ = b.answerCallback(cb, "Ошибка", true)
+			return
+		}
+		// При необходимости — проверка роли
+		if u.Status != users.StatusApproved || (u.Role != users.RoleAdmin && u.Role != users.RoleAdministrator) {
+			b.editTextAndClear(fromChat, cb.Message.MessageID, "Недостаточно прав")
+			_ = b.answerCallback(cb, "Ошибка", true)
+			return
+		}
+
+		if err := b.inventory.ReceiveWithCost(ctx, u.ID, wh, mat, qty, price, "supply"); err != nil {
+			b.editTextAndClear(fromChat, cb.Message.MessageID, "Ошибка приёмки: "+err.Error())
+			_ = b.answerCallback(cb, "Ошибка", true)
+			return
+		}
+		_, _ = b.materials.UpdatePrice(ctx, mat, price)
+		b.editTextAndClear(fromChat, cb.Message.MessageID, "Поставка проведена.")
+		_ = b.states.Set(ctx, fromChat, dialog.StateSupMenu, dialog.Payload{})
+		b.showSuppliesMenu(fromChat, nil)
+		_ = b.answerCallback(cb, "Готово", false)
 		return
 	}
 }

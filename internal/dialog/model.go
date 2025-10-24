@@ -38,6 +38,14 @@ const (
 	StateStockItem   State = "stock_item"    // карточка материала (остаток + действия)
 	StateStockInQty  State = "stock_in_qty"  // ввод количества для прихода
 	StateStockOutQty State = "stock_out_qty" // ввод количества для списания
+
+	// Поставки (админ/администратор)
+	StateSupMenu      State = "sup_menu"
+	StateSupPickWh    State = "sup_pick_wh"
+	StateSupPickMat   State = "sup_pick_mat"
+	StateSupQty       State = "sup_qty"
+	StateSupUnitPrice State = "sup_unit_price"
+	StateSupConfirm   State = "sup_confirm"
 )
 
 type Payload map[string]any

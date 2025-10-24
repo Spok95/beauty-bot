@@ -17,16 +17,10 @@ func (r *Repo) Create(ctx context.Context, name string, categoryID int64, unit U
 	row := r.pool.QueryRow(ctx, `
 		INSERT INTO materials (name, category_id, unit)
 		VALUES ($1,$2,$3)
-		ON CONFLICT (name) DO NOTHING
-		RETURNING id, name, category_id, unit, active, created_at
-	`, name, categoryID, string(unit))
+		RETURNING id, name, category_id, unit, active, created_at, price_per_unit
+	`, name, categoryID, unit)
 	var m Material
-	err := row.Scan(&m.ID, &m.Name, &m.CategoryID, &m.Unit, &m.Active, &m.CreatedAt)
-	if err == pgx.ErrNoRows {
-		// уже есть — вернём
-		return r.GetByName(ctx, name)
-	}
-	if err != nil {
+	if err := row.Scan(&m.ID, &m.Name, &m.CategoryID, &m.Unit, &m.Active, &m.CreatedAt, &m.PricePerUnit); err != nil {
 		return nil, err
 	}
 	return &m, nil
@@ -34,11 +28,11 @@ func (r *Repo) Create(ctx context.Context, name string, categoryID int64, unit U
 
 func (r *Repo) GetByID(ctx context.Context, id int64) (*Material, error) {
 	row := r.pool.QueryRow(ctx, `
-		SELECT id, name, category_id, unit, active, created_at
+		SELECT id, name, category_id, unit, active, created_at, price_per_unit
 		FROM materials WHERE id=$1
 	`, id)
 	var m Material
-	if err := row.Scan(&m.ID, &m.Name, &m.CategoryID, &m.Unit, &m.Active, &m.CreatedAt); err != nil {
+	if err := row.Scan(&m.ID, &m.Name, &m.CategoryID, &m.Unit, &m.Active, &m.CreatedAt, &m.PricePerUnit); err != nil {
 		if err == pgx.ErrNoRows {
 			return nil, nil
 		}
@@ -99,23 +93,24 @@ func (r *Repo) SetActive(ctx context.Context, id int64, active bool) (*Material,
 }
 
 func (r *Repo) List(ctx context.Context, onlyActive bool) ([]Material, error) {
-	query := `
-		SELECT id, name, category_id, unit, active, created_at
+	q := `
+		SELECT id, name, category_id, unit, active, created_at, price_per_unit
 		FROM materials
 	`
 	if onlyActive {
-		query += " WHERE active = true"
+		q += " WHERE active = TRUE"
 	}
-	query += " ORDER BY name"
-	rows, err := r.pool.Query(ctx, query)
+	q += " ORDER BY name"
+	rows, err := r.pool.Query(ctx, q)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
+
 	var out []Material
 	for rows.Next() {
 		var m Material
-		if err := rows.Scan(&m.ID, &m.Name, &m.CategoryID, &m.Unit, &m.Active, &m.CreatedAt); err != nil {
+		if err := rows.Scan(&m.ID, &m.Name, &m.CategoryID, &m.Unit, &m.Active, &m.CreatedAt, &m.PricePerUnit); err != nil {
 			return nil, err
 		}
 		out = append(out, m)
@@ -190,4 +185,26 @@ func (r *Repo) GetBalance(ctx context.Context, warehouseID, materialID int64) (f
 		return 0, err
 	}
 	return q, nil
+}
+
+func (r *Repo) UpdatePrice(ctx context.Context, id int64, price float64) (*Material, error) {
+	row := r.pool.QueryRow(ctx, `
+		UPDATE materials SET price_per_unit=$2
+		WHERE id=$1
+		RETURNING id, name, category_id, unit, active, created_at, price_per_unit
+	`, id, price)
+	var m Material
+	if err := row.Scan(&m.ID, &m.Name, &m.CategoryID, &m.Unit, &m.Active, &m.CreatedAt, &m.PricePerUnit); err != nil {
+		return nil, err
+	}
+	return &m, nil
+}
+
+func (r *Repo) GetPrice(ctx context.Context, id int64) (float64, error) {
+	row := r.pool.QueryRow(ctx, `SELECT price_per_unit FROM materials WHERE id=$1`, id)
+	var p float64
+	if err := row.Scan(&p); err != nil {
+		return 0, err
+	}
+	return p, nil
 }

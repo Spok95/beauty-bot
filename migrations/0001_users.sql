@@ -31,13 +31,15 @@ CREATE TABLE IF NOT EXISTS material_categories (
 
 -- MATERIALS
 CREATE TABLE IF NOT EXISTS materials (
-                                         id          BIGSERIAL PRIMARY KEY,
-                                         name        TEXT        NOT NULL UNIQUE,
-                                         category_id BIGINT      NOT NULL REFERENCES material_categories(id) ON DELETE RESTRICT,
-                                         unit        TEXT        NOT NULL DEFAULT 'pcs',
-                                         active      BOOLEAN     NOT NULL DEFAULT TRUE,
-                                         created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+                                         id             BIGSERIAL   PRIMARY KEY,
+                                         name           TEXT        NOT NULL UNIQUE,
+                                         category_id    BIGINT      NOT NULL REFERENCES material_categories(id) ON DELETE RESTRICT,
+                                         unit           TEXT        NOT NULL DEFAULT 'pcs',
+                                         price_per_unit NUMERIC(12,2) NOT NULL DEFAULT 0, -- ₽ за g / шт
+                                         active         BOOLEAN     NOT NULL DEFAULT TRUE,
+                                         created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
 CREATE INDEX IF NOT EXISTS idx_materials_category ON materials(category_id);
 
 -- BALANCES
@@ -60,6 +62,19 @@ CREATE TABLE IF NOT EXISTS movements (
                                          note         TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_movements_wh_mat_time ON movements(warehouse_id, material_id, created_at DESC);
+
+-- Поставки (приёмка материалов с ценой)
+CREATE TABLE IF NOT EXISTS supplies (
+                                        id           BIGSERIAL   PRIMARY KEY,
+                                        created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+                                        added_by     BIGINT      NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+                                        warehouse_id BIGINT      NOT NULL REFERENCES warehouses(id) ON DELETE RESTRICT,
+                                        material_id  BIGINT      NOT NULL REFERENCES materials(id)  ON DELETE RESTRICT,
+                                        qty          NUMERIC(18,3) NOT NULL CHECK (qty > 0),
+                                        unit_cost    NUMERIC(12,2) NOT NULL DEFAULT 0,
+                                        total_cost   NUMERIC(14,2) NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_supplies_wh_mat_time ON supplies(warehouse_id, material_id, created_at DESC);
 
 
 -- +goose Down
