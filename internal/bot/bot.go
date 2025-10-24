@@ -1091,28 +1091,28 @@ func (b *Bot) onCallback(ctx context.Context, upd tgbotapi.Update) {
 			b.editTextWithNav(fromChat, cb.Message.MessageID, "Введите цену за единицу (руб)")
 			_ = b.states.Set(ctx, fromChat, dialog.StateSupUnitPrice, st.Payload)
 		case dialog.StateSupCart:
-			// Шаг назад из корзины: редактируем ПОСЛЕДНЮЮ добавленную позицию.
-			// Достаём items из payload, забираем последний элемент и возвращаемся на шаг ввода цены.
+			// Возврат к редактированию последней добавленной позиции
 			items := b.parseSupItems(st.Payload["items"])
 			if len(items) == 0 {
-				// Корзина пустая — вернёмся к выбору материала
-				b.showSuppliesPickMaterial(ctx, fromChat, cb.Message.MessageID)
-				_ = b.states.Set(ctx, fromChat, dialog.StateSupPickMat, st.Payload)
-				break
+				// Корзина пуста — вернём меню поставок
+				_ = b.states.Set(ctx, fromChat, dialog.StateSupMenu, dialog.Payload{})
+				b.showSuppliesMenu(fromChat, &cb.Message.MessageID)
+				return
 			}
 			last := items[len(items)-1]
-			// урежем корзину на 1 — позиция уходит "на редактирование"
+			// Удаляем последнюю позицию из корзины — будем вводить её заново
 			items = items[:len(items)-1]
-			st.Payload["items"] = items
 
-			// восстановим контекст последней позиции
-			matID := int64(last["mat_id"].(float64))
-			qty := int64(last["qty"].(float64))
-			st.Payload["mat_id"] = float64(matID)
-			st.Payload["qty"] = float64(qty)
-
-			_ = b.states.Set(ctx, fromChat, dialog.StateSupUnitPrice, st.Payload)
+			// Собираем payload для шага ввода цены (предыдущий шаг после qty)
+			payload := dialog.Payload{
+				"wh_id":  st.Payload["wh_id"],
+				"mat_id": last["mat_id"],
+				"qty":    last["qty"],
+				"items":  items,
+			}
+			_ = b.states.Set(ctx, fromChat, dialog.StateSupUnitPrice, payload)
 			b.editTextWithNav(fromChat, cb.Message.MessageID, "Введите цену за единицу (руб)")
+			return
 
 		default:
 			b.editTextAndClear(fromChat, cb.Message.MessageID, "Действие неактуально.")
@@ -1527,7 +1527,15 @@ func (b *Bot) onCallback(ctx context.Context, upd tgbotapi.Update) {
 		matID, _ := strconv.ParseInt(strings.TrimPrefix(data, "sup:mat:"), 10, 64)
 		st, _ := b.states.Get(ctx, fromChat)
 		wh := int64(st.Payload["wh_id"].(float64))
-		_ = b.states.Set(ctx, fromChat, dialog.StateSupQty, dialog.Payload{"wh_id": wh, "mat_id": matID})
+		// ВАЖНО: переносим корзину, иначе она теряется
+		payload := dialog.Payload{
+			"wh_id":  wh,
+			"mat_id": matID,
+		}
+		if items, ok := st.Payload["items"]; ok {
+			payload["items"] = items
+		}
+		_ = b.states.Set(ctx, fromChat, dialog.StateSupQty, payload)
 		b.editTextWithNav(fromChat, cb.Message.MessageID, "Введите количество (число, например 250 или 3.5)")
 		_ = b.answerCallback(cb, "Ок", false)
 		return
