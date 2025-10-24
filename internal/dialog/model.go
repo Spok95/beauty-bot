@@ -47,6 +47,14 @@ const (
 	StateSupUnitPrice State = "sup_unit_price"
 	StateSupCart      State = "sup_cart" // НОВОЕ: корзина с позициями
 	StateSupConfirm   State = "sup_confirm"
+
+	// Расход/Аренда (мастер)
+	StateConsPlace   State = "cons_place" // выбор: зал/кабинет
+	StateConsQty     State = "cons_qty"   // кол-во часов/дней (int)
+	StateConsMatPick State = "cons_mat_pick"
+	StateConsMatQty  State = "cons_mat_qty" // int (г/шт)
+	StateConsCart    State = "cons_cart"    // корзина материалов
+	StateConsSummary State = "cons_summary" // сводка и итог
 )
 
 type Payload map[string]any
