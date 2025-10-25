@@ -127,6 +127,37 @@ CREATE TABLE IF NOT EXISTS invoices (
                                         created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- ===== ТАРИФЫ АРЕНДЫ =====
+CREATE TABLE IF NOT EXISTS rent_rates (
+                                          id BIGSERIAL PRIMARY KEY,
+                                          place TEXT NOT NULL CHECK (place IN ('hall','cabinet')),
+                                          with_subscription BOOLEAN NOT NULL,
+                                          unit TEXT NOT NULL CHECK (unit IN ('hour','day')),
+                                          threshold_materials NUMERIC(12,2) NOT NULL,
+                                          price_with_materials NUMERIC(12,2) NOT NULL,
+                                          price_own_materials NUMERIC(12,2) NOT NULL,
+                                          active_from DATE NOT NULL DEFAULT CURRENT_DATE,
+                                          active_to   DATE
+);
+
+-- ===== СИДЫ (без абонемента) =====
+-- Общий зал (почасово)
+INSERT INTO rent_rates (place, with_subscription, unit, threshold_materials, price_with_materials, price_own_materials, active_from)
+SELECT 'hall', FALSE, 'hour', 100, 490, 640, CURRENT_DATE
+WHERE NOT EXISTS (
+    SELECT 1 FROM rent_rates
+    WHERE place='hall' AND with_subscription=FALSE AND unit='hour'
+      AND (active_to IS NULL OR active_to>=CURRENT_DATE)
+);
+
+-- Кабинет (посуточно)
+INSERT INTO rent_rates (place, with_subscription, unit, threshold_materials, price_with_materials, price_own_materials, active_from)
+SELECT 'cabinet', FALSE, 'day', 1000, 5500, 6500, CURRENT_DATE
+WHERE NOT EXISTS (
+    SELECT 1 FROM rent_rates
+    WHERE place='cabinet' AND with_subscription=FALSE AND unit='day'
+      AND (active_to IS NULL OR active_to>=CURRENT_DATE)
+);
 
 -- +goose Down
 DROP TABLE IF EXISTS balances;

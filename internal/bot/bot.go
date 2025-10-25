@@ -1909,12 +1909,15 @@ func (b *Bot) onCallback(ctx context.Context, upd tgbotapi.Update) {
 		// тарифы: пытаемся взять из rent_rates, иначе дефолт
 		rt, ok, _ := b.cons.GetRate(ctx, place, unit, false)
 		if !ok {
-			// дефолтные: hall/hour  threshold=100,  with=490, own=640 ; cabinet/day threshold=1000, with=5500, own=6500
-			if place == "hall" {
-				rt = consumption.Rate{Threshold: 100, PriceWith: 490, PriceOwn: 640}
-			} else {
-				rt = consumption.Rate{Threshold: 1000, PriceWith: 5500, PriceOwn: 6500}
+			b.send(tgbotapi.NewMessage(fromChat, "Тарифы не настроены. Сообщение отправлено администратору."))
+			note := fmt.Sprintf("⚠️ Нет активных тарифов для: %s / %s (без абонемента). Настройте /admin → Тарифы.",
+				map[string]string{"hall": "Зал", "cabinet": "Кабинет"}[place],
+				map[string]string{"hour": "час", "day": "день"}[unit],
+			)
+			if b.adminChat != 0 {
+				b.send(tgbotapi.NewMessage(b.adminChat, note))
 			}
+			return
 		}
 		need := float64(qty) * rt.Threshold
 		var rent float64
