@@ -83,3 +83,31 @@ func (r *Repo) Reject(ctx context.Context, tgID int64) (*User, error) {
 	}
 	return &u, nil
 }
+
+// ListByRole возвращает всех пользователей с заданной ролью и статусом.
+func (r *Repo) ListByRole(ctx context.Context, role Role, status Status) ([]*User, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT id, telegram_id, username, role, status, created_at, updated_at
+		FROM users
+		WHERE role = $1 AND status = $2
+	`, role, status)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []*User
+	for rows.Next() {
+		var u User
+		if err := rows.Scan(
+			&u.ID, &u.TelegramID, &u.Username, &u.Role, &u.Status, &u.CreatedAt, &u.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, &u)
+	}
+	if rows.Err() != nil {
+		return nil, rows.Err()
+	}
+	return out, nil
+}

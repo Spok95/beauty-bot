@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -101,4 +102,20 @@ func (r *Repo) Consume(ctx context.Context, actorID, warehouseID, materialID int
 	}
 	// отрицательный дельта = списание; MoveOut должен быть объявлен в этом файле
 	return r.apply(ctx, actorID, warehouseID, materialID, -qty, MoveOut, note)
+}
+
+// GetBalance возвращает текущий остаток по складу/материалу (0, nil если записи нет).
+func (r *Repo) GetBalance(ctx context.Context, warehouseID, materialID int64) (float64, error) {
+	var qty float64
+	err := r.pool.
+		QueryRow(ctx, `
+			SELECT qty
+			FROM balances
+			WHERE warehouse_id = $1 AND material_id = $2
+		`, warehouseID, materialID).
+		Scan(&qty)
+	if err == pgx.ErrNoRows {
+		return 0, nil
+	}
+	return qty, err
 }

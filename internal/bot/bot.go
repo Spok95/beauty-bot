@@ -18,6 +18,7 @@ import (
 )
 
 const lowStockThresholdGr = 20.0
+const lowStockThresholdPcs = 1.0
 
 type Bot struct {
 	api       *tgbotapi.BotAPI
@@ -676,19 +677,75 @@ func roundTo10(x float64) float64 {
 }
 
 // maybeNotifyLowOrNegative Информирование при минусовом/низком остатке (только для материалов в граммах)
-func (b *Bot) maybeNotifyLowOrNegative(ctx context.Context, chatID int64, whID, matID int64) {
-	m, _ := b.materials.GetByID(ctx, matID)
-	if m == nil || m.Unit != materials.UnitG {
-		return
-	}
-	qty, err := b.materials.GetBalance(ctx, whID, matID)
+func (b *Bot) maybeNotifyLowOrNegative(ctx context.Context, _ int64, whID, matID int64) {
+	// 1) Остаток
+	bal, err := b.inventory.GetBalance(ctx, whID, matID)
 	if err != nil {
 		return
 	}
-	if qty < 0 {
-		b.send(tgbotapi.NewMessage(chatID, fmt.Sprintf("⚠️ Материалы:\n— %s\nзакончились.", m.Name)))
-	} else if qty < lowStockThresholdGr {
-		b.send(tgbotapi.NewMessage(chatID, fmt.Sprintf("⚠️ Материалы:\n— %s — %.3f g\nзаканчиваются, не забудьте пополнить остаток на складе.", m.Name, qty)))
+
+	// 2) Материал (имя + ед.)
+	m, _ := b.materials.GetByID(ctx, matID)
+	name := fmt.Sprintf("ID:%d", matID)
+	unit := "g"
+	if m != nil {
+		name = m.Name
+		if s := string(m.Unit); s != "" {
+			unit = s
+		}
+	}
+
+	// 3) Порог по ед. измерения
+	var thr float64
+	switch unit {
+	case "g":
+		thr = lowStockThresholdGr
+	case "pcs":
+		thr = lowStockThresholdPcs
+	default:
+		// прочие единицы сейчас не сигналим
+		return
+	}
+
+	// 4) Сообщение
+	var text string
+	if bal < 0 {
+		text = fmt.Sprintf("⚠️ Материалы:\n— %s\nзакончились.", name)
+	} else if bal >= 0 && bal < thr {
+		// подпись единицы в тексте
+		unitRU := "g"
+		if unit == "pcs" {
+			unitRU = "шт"
+		}
+		text = fmt.Sprintf("⚠️ Материалы:\n— %s — %.0f %s заканчиваются…", name, bal, unitRU)
+	} else {
+		return
+	}
+
+	// 5) Рассылка — админ-чат + все администраторы (+админы)
+	b.notifyStockRecipients(ctx, text)
+}
+
+// Шлём оповещение в админ-чат и всем администраторам (role=administrator) + дублируем админам (role=admin) на всякий случай.
+func (b *Bot) notifyStockRecipients(ctx context.Context, text string) {
+	if b.adminChat != 0 {
+		b.send(tgbotapi.NewMessage(b.adminChat, text))
+	}
+	// всем подтверждённым администраторам
+	if list, err := b.users.ListByRole(ctx, users.RoleAdministrator, users.StatusApproved); err == nil {
+		for _, u := range list {
+			if u.TelegramID != 0 {
+				b.send(tgbotapi.NewMessage(u.TelegramID, text))
+			}
+		}
+	}
+	// дублируем подтверждённым админам (на случай отсутствия админ-чата)
+	if list, err := b.users.ListByRole(ctx, users.RoleAdmin, users.StatusApproved); err == nil {
+		for _, u := range list {
+			if u.TelegramID != 0 {
+				b.send(tgbotapi.NewMessage(u.TelegramID, text))
+			}
+		}
 	}
 }
 
@@ -1973,16 +2030,16 @@ func (b *Bot) onCallback(ctx context.Context, upd tgbotapi.Update) {
 			unitRU := map[string]string{"hour": "ч", "day": "дн"}
 			var sb strings.Builder
 
-			fmt.Fprintf(&sb, "✅ Подтверждена сессия расхода/аренды\n")
+			_, _ = fmt.Fprintf(&sb, "✅ Подтверждена сессия расхода/аренды\n")
 			if u != nil {
-				fmt.Fprintf(&sb, "Мастер: %s (@%s, id %d)\n", strings.TrimSpace(u.Username), cb.From.UserName, cb.From.ID)
+				_, _ = fmt.Fprintf(&sb, "Мастер: %s (@%s, id %d)\n", strings.TrimSpace(u.Username), cb.From.UserName, cb.From.ID)
 			} else {
-				fmt.Fprintf(&sb, "Мастер: @%s (id %d)\n", cb.From.UserName, cb.From.ID)
+				_, _ = fmt.Fprintf(&sb, "Мастер: @%s (id %d)\n", cb.From.UserName, cb.From.ID)
 			}
-			fmt.Fprintf(&sb, "Помещение: %s\nКол-во: %d %s\n", placeRU[place], qtyI, unitRU[unit])
+			_, _ = fmt.Fprintf(&sb, "Помещение: %s\nКол-во: %d %s\n", placeRU[place], qtyI, unitRU[unit])
 
 			// материалы
-			fmt.Fprintf(&sb, "Материалы:\n")
+			_, _ = fmt.Fprintf(&sb, "Материалы:\n")
 			var matsSum float64
 			for _, it := range items {
 				matID := int64(it["mat_id"].(float64))
@@ -1994,7 +2051,7 @@ func (b *Bot) onCallback(ctx context.Context, upd tgbotapi.Update) {
 				price, _ := b.materials.GetPrice(ctx, matID)
 				line := float64(q) * price
 				matsSum += line
-				fmt.Fprintf(&sb, "• %s — %d × %.2f = %.2f ₽\n", name, q, price, line)
+				_, _ = fmt.Fprintf(&sb, "• %s — %d × %.2f = %.2f ₽\n", name, q, price, line)
 			}
 
 			// финансы: округлённая сумма материалов, аренда, итого — у нас уже посчитаны
@@ -2002,7 +2059,7 @@ func (b *Bot) onCallback(ctx context.Context, upd tgbotapi.Update) {
 			rent := st.Payload["rent"].(float64)
 			matsFact := st.Payload["mats_sum"].(float64)
 			total := rent + matsFact
-			fmt.Fprintf(&sb, "\nМатериалы (факт): %.2f ₽, округл.: %.2f ₽\nАренда: %.2f ₽\nИтого: %.2f ₽",
+			_, _ = fmt.Fprintf(&sb, "\nМатериалы (факт): %.2f ₽, округл.: %.2f ₽\nАренда: %.2f ₽\nИтого: %.2f ₽",
 				matsFact, rounded, rent, total)
 
 			b.send(tgbotapi.NewMessage(b.adminChat, sb.String()))
