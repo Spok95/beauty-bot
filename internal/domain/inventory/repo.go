@@ -94,3 +94,11 @@ func (r *Repo) ReceiveWithCost(ctx context.Context, actorID, warehouseID, materi
 
 	return tx.Commit(ctx)
 }
+
+func (r *Repo) Consume(ctx context.Context, actorID, warehouseID, materialID int64, qty float64, note string) error {
+	if qty <= 0 {
+		return fmt.Errorf("qty must be > 0")
+	}
+	// отрицательный дельта = списание; MoveOut должен быть объявлен в этом файле
+	return r.apply(ctx, actorID, warehouseID, materialID, -qty, MoveOut, note)
+}

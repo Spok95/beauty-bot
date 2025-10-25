@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/Spok95/beauty-bot/internal/domain/consumption"
 	"github.com/Spok95/beauty-bot/internal/domain/inventory"
 	"github.com/Spok95/beauty-bot/internal/domain/materials"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -27,17 +28,19 @@ type Bot struct {
 	catalog   *catalog.Repo
 	materials *materials.Repo
 	inventory *inventory.Repo
+	cons      *consumption.Repo
 }
 
 func New(api *tgbotapi.BotAPI, log *slog.Logger,
 	usersRepo *users.Repo, statesRepo *dialog.Repo,
 	adminChatID int64, catalogRepo *catalog.Repo,
-	materialsRepo *materials.Repo, inventoryRepo *inventory.Repo) *Bot {
+	materialsRepo *materials.Repo, inventoryRepo *inventory.Repo, consRepo *consumption.Repo) *Bot {
 
 	return &Bot{
 		api: api, log: log, users: usersRepo, states: statesRepo,
 		adminChat: adminChatID, catalog: catalogRepo,
 		materials: materialsRepo, inventory: inventoryRepo,
+		cons: consRepo,
 	}
 }
 
@@ -63,6 +66,19 @@ func (b *Bot) send(msg tgbotapi.Chattable) {
 	if _, err := b.api.Send(msg); err != nil {
 		b.log.Error("send failed", "err", err)
 	}
+}
+
+func (b *Bot) getConsumablesWarehouseID(ctx context.Context) (int64, error) {
+	ws, err := b.catalog.ListWarehouses(ctx)
+	if err != nil {
+		return 0, err
+	}
+	for _, w := range ws {
+		if w.Active && w.Type == "consumables" {
+			return w.ID, nil
+		}
+	}
+	return 0, fmt.Errorf("склад Расходники не найден/не активен")
 }
 
 /*** NAV HELPERS ***/
@@ -132,6 +148,16 @@ func adminReplyKeyboard() tgbotapi.ReplyKeyboardMarkup {
 			{tgbotapi.NewKeyboardButton("Материалы")},
 			{tgbotapi.NewKeyboardButton("Остатки")},
 			{tgbotapi.NewKeyboardButton("Поставки")},
+		},
+	}
+}
+
+func masterReplyKeyboard() tgbotapi.ReplyKeyboardMarkup {
+	return tgbotapi.ReplyKeyboardMarkup{
+		ResizeKeyboard: true,
+		Keyboard: [][]tgbotapi.KeyboardButton{
+			{tgbotapi.NewKeyboardButton("Расход/Аренда")},
+			{tgbotapi.NewKeyboardButton("Список команд")},
 		},
 	}
 }
@@ -594,6 +620,61 @@ func (b *Bot) showSuppliesCart(ctx context.Context, chatID int64, editMsgID *int
 	}
 }
 
+func (b *Bot) consParseItems(v any) []map[string]any {
+	arr, ok := v.([]any)
+	if !ok {
+		if mm, ok2 := v.([]map[string]any); ok2 {
+			return mm
+		}
+		return nil
+	}
+	out := make([]map[string]any, 0, len(arr))
+	for _, e := range arr {
+		if m, ok := e.(map[string]any); ok {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+func (b *Bot) showConsCart(ctx context.Context, chatID int64, editMsgID *int, place, unit string, qty int, items []map[string]any) {
+	lines := []string{fmt.Sprintf("Расход/Аренда: %s, %d %s", map[string]string{"hall": "Зал", "cabinet": "Кабинет"}[place], qty, map[string]string{"hour": "ч", "day": "дн"}[unit])}
+	var sum float64
+	for _, it := range items {
+		matID := int64(it["mat_id"].(float64))
+		q := int64(it["qty"].(float64))
+		name := fmt.Sprintf("ID:%d", matID)
+		if m, _ := b.materials.GetByID(ctx, matID); m != nil {
+			name = m.Name
+		}
+		price, _ := b.materials.GetPrice(ctx, matID)
+		line := float64(q) * price
+		sum += line
+		lines = append(lines, fmt.Sprintf("• %s — %d × %.2f = %.2f ₽", name, q, price, line))
+	}
+	lines = append(lines, fmt.Sprintf("\nСумма материалов: %.2f ₽", sum))
+
+	kb := tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("➕ Добавить материал", "cons:additem")),
+		tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("🧮 Посчитать", "cons:calc")),
+		navKeyboard(true, true).InlineKeyboard[0],
+	)
+
+	text := strings.Join(lines, "\n")
+	if editMsgID != nil {
+		b.send(tgbotapi.NewEditMessageTextAndMarkup(chatID, *editMsgID, text, kb))
+	} else {
+		m := tgbotapi.NewMessage(chatID, text)
+		m.ReplyMarkup = kb
+		b.send(m)
+	}
+}
+
+func roundTo10(x float64) float64 {
+	// до ближайшего десятка
+	return float64(int((x+5)/10) * 10)
+}
+
 // maybeNotifyLowOrNegative Информирование при минусовом/низком остатке (только для материалов в граммах)
 func (b *Bot) maybeNotifyLowOrNegative(ctx context.Context, chatID int64, whID, matID int64) {
 	m, _ := b.materials.GetByID(ctx, matID)
@@ -667,6 +748,13 @@ func (b *Bot) onMessage(ctx context.Context, upd tgbotapi.Update) {
 				return
 			}
 
+			if u.Role == users.RoleMaster && u.Status == users.StatusApproved {
+				m := tgbotapi.NewMessage(chatID, "Готово! Для учёта материалов и аренды жми «Расход/Аренда» или используй /rent.")
+				m.ReplyMarkup = masterReplyKeyboard()
+				b.send(m)
+				return
+			}
+
 			switch u.Status {
 			case users.StatusApproved:
 				b.send(tgbotapi.NewMessage(chatID, "Вы уже подтверждены. /help — список команд."))
@@ -701,6 +789,26 @@ func (b *Bot) onMessage(ctx context.Context, upd tgbotapi.Update) {
 		}
 	}
 
+	// Нижняя панель мастера
+	if msg.Text == "Расход/Аренда" {
+		u, _ := b.users.GetByTelegramID(ctx, tgID)
+		if u == nil || u.Status != users.StatusApproved || u.Role != users.RoleMaster {
+			return
+		}
+		_ = b.states.Set(ctx, chatID, dialog.StateConsPlace, dialog.Payload{"with_sub": false})
+		kb := tgbotapi.NewInlineKeyboardMarkup(
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("Общий зал", "cons:place:hall"),
+				tgbotapi.NewInlineKeyboardButtonData("Кабинет", "cons:place:cabinet"),
+			),
+			navKeyboard(false, true).InlineKeyboard[0],
+		)
+		m := tgbotapi.NewMessage(chatID, "Выберите помещение:")
+		m.ReplyMarkup = kb
+		b.send(m)
+		return
+	}
+
 	// Кнопки нижней панели для админа
 	if msg.Text == "Список команд" || msg.Text == "Склады" || msg.Text == "Категории" || msg.Text == "Материалы" || msg.Text == "Остатки" || msg.Text == "Поставки" {
 		u, _ := b.users.GetByTelegramID(ctx, tgID)
@@ -730,6 +838,29 @@ func (b *Bot) onMessage(ctx context.Context, upd tgbotapi.Update) {
 			b.showSuppliesMenu(chatID, nil)
 			return
 		}
+		return
+	}
+
+	// Триггеры расхода/аренды по тексту (доступно всем подтверждённым ролям)
+	if msg.Text == "/rent" || msg.Text == "/consumption" {
+		u, _ := b.users.GetByTelegramID(ctx, tgID)
+		if u == nil || u.Status != users.StatusApproved || u.Role != users.RoleMaster {
+			b.send(tgbotapi.NewMessage(chatID, "Доступ запрещён."))
+			return
+		}
+		_ = b.states.Set(ctx, chatID, dialog.StateConsPlace, dialog.Payload{
+			"with_sub": false,
+		})
+		kb := tgbotapi.NewInlineKeyboardMarkup(
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("Общий зал", "cons:place:hall"),
+				tgbotapi.NewInlineKeyboardButtonData("Кабинет", "cons:place:cabinet"),
+			),
+			navKeyboard(false, true).InlineKeyboard[0],
+		)
+		m := tgbotapi.NewMessage(chatID, "Выберите помещение:")
+		m.ReplyMarkup = kb
+		b.send(m)
 		return
 	}
 
@@ -953,6 +1084,47 @@ func (b *Bot) onMessage(ctx context.Context, upd tgbotapi.Update) {
 		_ = b.states.Set(ctx, chatID, dialog.StateSupCart, st.Payload)
 		b.showSuppliesCart(ctx, chatID, nil, wh, items)
 		return
+
+	case dialog.StateConsQty:
+		s := strings.TrimSpace(msg.Text)
+		s = strings.ReplaceAll(s, ",", ".")
+		if strings.Contains(s, ".") {
+			b.send(tgbotapi.NewMessage(chatID, "Введите целое число (часов/дней)."))
+			return
+		}
+		n, err := strconv.ParseInt(s, 10, 64)
+		if err != nil || n <= 0 {
+			b.send(tgbotapi.NewMessage(chatID, "Некорректное значение. Введите целое положительное число."))
+			return
+		}
+		st.Payload["qty"] = float64(n)
+		// корзина пустая
+		st.Payload["items"] = []map[string]any{}
+		_ = b.states.Set(ctx, chatID, dialog.StateConsCart, st.Payload)
+		b.showConsCart(ctx, chatID, nil, st.Payload["place"].(string), st.Payload["unit"].(string), int(n), []map[string]any{})
+		return
+
+	case dialog.StateConsMatQty:
+		s := strings.TrimSpace(msg.Text)
+		s = strings.ReplaceAll(s, ",", ".")
+		if strings.Contains(s, ".") {
+			b.send(tgbotapi.NewMessage(chatID, "Введите целое число (граммы/шт)."))
+			return
+		}
+		n, err := strconv.ParseInt(s, 10, 64)
+		if err != nil || n <= 0 {
+			b.send(tgbotapi.NewMessage(chatID, "Некорректное значение. Введите целое положительное число."))
+			return
+		}
+		items := b.consParseItems(st.Payload["items"])
+		items = append(items, map[string]any{
+			"mat_id": st.Payload["mat_id"],
+			"qty":    float64(n),
+		})
+		st.Payload["items"] = items
+		_ = b.states.Set(ctx, chatID, dialog.StateConsCart, st.Payload)
+		b.showConsCart(ctx, chatID, nil, st.Payload["place"].(string), st.Payload["unit"].(string), int(st.Payload["qty"].(float64)), items)
+		return
 	}
 }
 
@@ -1113,6 +1285,44 @@ func (b *Bot) onCallback(ctx context.Context, upd tgbotapi.Update) {
 			_ = b.states.Set(ctx, fromChat, dialog.StateSupUnitPrice, payload)
 			b.editTextWithNav(fromChat, cb.Message.MessageID, "Введите цену за единицу (руб)")
 			return
+		case dialog.StateConsQty:
+			// назад к выбору помещения
+			_ = b.states.Set(ctx, fromChat, dialog.StateConsPlace, st.Payload)
+			kb := tgbotapi.NewInlineKeyboardMarkup(
+				tgbotapi.NewInlineKeyboardRow(
+					tgbotapi.NewInlineKeyboardButtonData("Общий зал", "cons:place:hall"),
+					tgbotapi.NewInlineKeyboardButtonData("Кабинет", "cons:place:cabinet"),
+				),
+				navKeyboard(false, true).InlineKeyboard[0],
+			)
+			b.send(tgbotapi.NewEditMessageTextAndMarkup(fromChat, cb.Message.MessageID, "Выберите помещение:", kb))
+		case dialog.StateConsCart:
+			// назад к вводу количества часов/дней
+			b.editTextWithNav(fromChat, cb.Message.MessageID, fmt.Sprintf("Введите количество (%s):", map[string]string{"hour": "часы", "day": "дни"}[st.Payload["unit"].(string)]))
+			_ = b.states.Set(ctx, fromChat, dialog.StateConsQty, st.Payload)
+		case dialog.StateConsMatPick:
+			// назад — снова корзина
+			items := b.consParseItems(st.Payload["items"])
+			_ = b.states.Set(ctx, fromChat, dialog.StateConsCart, st.Payload)
+			b.showConsCart(ctx, fromChat, &cb.Message.MessageID, st.Payload["place"].(string), st.Payload["unit"].(string), int(st.Payload["qty"].(float64)), items)
+		case dialog.StateConsMatQty:
+			// назад к выбору материала
+			_ = b.states.Set(ctx, fromChat, dialog.StateConsMatPick, st.Payload)
+			mats, _ := b.materials.List(ctx, true)
+			rows := [][]tgbotapi.InlineKeyboardButton{}
+			for _, m := range mats {
+				rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+					tgbotapi.NewInlineKeyboardButtonData(m.Name, fmt.Sprintf("cons:mat:%d", m.ID)),
+				))
+			}
+			rows = append(rows, navKeyboard(true, true).InlineKeyboard[0])
+			kb := tgbotapi.NewInlineKeyboardMarkup(rows...)
+			b.send(tgbotapi.NewEditMessageTextAndMarkup(fromChat, cb.Message.MessageID, "Выберите материал:", kb))
+		case dialog.StateConsSummary:
+			// назад в корзину
+			items := b.consParseItems(st.Payload["items"])
+			_ = b.states.Set(ctx, fromChat, dialog.StateConsCart, st.Payload)
+			b.showConsCart(ctx, fromChat, &cb.Message.MessageID, st.Payload["place"].(string), st.Payload["unit"].(string), int(st.Payload["qty"].(float64)), items)
 
 		default:
 			b.editTextAndClear(fromChat, cb.Message.MessageID, "Действие неактуально.")
@@ -1122,8 +1332,6 @@ func (b *Bot) onCallback(ctx context.Context, upd tgbotapi.Update) {
 	}
 
 	switch {
-	/* ===== Регистрация (как раньше) ===== */
-
 	case strings.HasPrefix(data, "role:"):
 		roleStr := strings.TrimPrefix(data, "role:")
 		var role users.Role
@@ -1579,6 +1787,229 @@ func (b *Bot) onCallback(ctx context.Context, upd tgbotapi.Update) {
 		b.editTextAndClear(fromChat, cb.Message.MessageID, "Поставка проведена.")
 		_ = b.states.Set(ctx, fromChat, dialog.StateSupMenu, dialog.Payload{})
 		b.showSuppliesMenu(fromChat, nil)
+		_ = b.answerCallback(cb, "Готово", false)
+		return
+
+		// Выбор помещения
+	case strings.HasPrefix(data, "cons:place:"):
+		place := strings.TrimPrefix(data, "cons:place:")
+		unit := "hour"
+		if place == "cabinet" {
+			unit = "day"
+		}
+		_ = b.states.Set(ctx, fromChat, dialog.StateConsQty, dialog.Payload{
+			"place": place, "unit": unit, "with_sub": false,
+		})
+		b.editTextWithNav(fromChat, cb.Message.MessageID, fmt.Sprintf("Введите количество (%s):", map[string]string{"hour": "часы", "day": "дни"}[unit]))
+		_ = b.answerCallback(cb, "Ок", false)
+		return
+
+		// Добавить материал
+	case data == "cons:additem":
+		st, _ := b.states.Get(ctx, fromChat)
+		_ = b.states.Set(ctx, fromChat, dialog.StateConsMatPick, st.Payload)
+		// список активных материалов
+		mats, _ := b.materials.List(ctx, true)
+		rows := [][]tgbotapi.InlineKeyboardButton{}
+		for _, m := range mats {
+			rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData(m.Name, fmt.Sprintf("cons:mat:%d", m.ID)),
+			))
+		}
+		rows = append(rows, navKeyboard(true, true).InlineKeyboard[0])
+		kb := tgbotapi.NewInlineKeyboardMarkup(rows...)
+		b.send(tgbotapi.NewEditMessageTextAndMarkup(fromChat, cb.Message.MessageID, "Выберите материал:", kb))
+		_ = b.answerCallback(cb, "Ок", false)
+		return
+
+	case strings.HasPrefix(data, "cons:mat:"):
+		matID, _ := strconv.ParseInt(strings.TrimPrefix(data, "cons:mat:"), 10, 64)
+		st, _ := b.states.Get(ctx, fromChat)
+		st.Payload["mat_id"] = float64(matID)
+		_ = b.states.Set(ctx, fromChat, dialog.StateConsMatQty, st.Payload)
+		b.editTextWithNav(fromChat, cb.Message.MessageID, "Введите количество (целое, g/шт)")
+		_ = b.answerCallback(cb, "Ок", false)
+		return
+
+	case data == "cons:calc":
+		st, _ := b.states.Get(ctx, fromChat)
+		// посчитаем и покажем сводку
+		place := st.Payload["place"].(string)
+		unit := st.Payload["unit"].(string)
+		qty := int(st.Payload["qty"].(float64))
+		items := b.consParseItems(st.Payload["items"])
+
+		// сумма материалов
+		var mats float64
+		for _, it := range items {
+			matID := int64(it["mat_id"].(float64))
+			q := int64(it["qty"].(float64))
+			price, _ := b.materials.GetPrice(ctx, matID)
+			mats += float64(q) * price
+		}
+		rounded := roundTo10(mats)
+
+		// тарифы: пытаемся взять из rent_rates, иначе дефолт
+		rt, ok, _ := b.cons.GetRate(ctx, place, unit, false)
+		if !ok {
+			// дефолтные: hall/hour  threshold=100,  with=490, own=640 ; cabinet/day threshold=1000, with=5500, own=6500
+			if place == "hall" {
+				rt = consumption.Rate{Threshold: 100, PriceWith: 490, PriceOwn: 640}
+			} else {
+				rt = consumption.Rate{Threshold: 1000, PriceWith: 5500, PriceOwn: 6500}
+			}
+		}
+		need := float64(qty) * rt.Threshold
+		var rent float64
+		var tariff string
+		if rounded >= need {
+			rent = float64(qty) * rt.PriceWith
+			tariff = "по ставке с материалами"
+		} else {
+			rent = float64(qty) * rt.PriceOwn
+			tariff = "по ставке со своими материалами"
+		}
+		total := rent + mats
+
+		// сохраним расчёт в payload
+		st.Payload["mats_sum"] = mats
+		st.Payload["mats_rounded"] = rounded
+		st.Payload["rent"] = rent
+		st.Payload["total"] = total
+		_ = b.states.Set(ctx, fromChat, dialog.StateConsSummary, st.Payload)
+
+		// вывод
+		txt := fmt.Sprintf(
+			"Сводка затрат для оплаты:\nПомещение: %s\nКол-во: %d %s\nМатериалы: %.2f ₽\nАренда: %.2f ₽ (%s)\nИтого к оплате: %.2f ₽",
+			map[string]string{"hall": "Зал", "cabinet": "Кабинет"}[place], qty, map[string]string{"hour": "ч", "day": "дн"}[unit],
+			mats, rent, tariff, total,
+		)
+		kb := tgbotapi.NewInlineKeyboardMarkup(
+			tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("✅ Подтвердить", "cons:confirm")),
+			tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("✏️ Изменить", "cons:edit")),
+			navKeyboard(true, true).InlineKeyboard[0],
+		)
+		b.send(tgbotapi.NewEditMessageTextAndMarkup(fromChat, cb.Message.MessageID, txt, kb))
+		_ = b.answerCallback(cb, "Ок", false)
+		return
+
+	case data == "cons:edit":
+		st, _ := b.states.Get(ctx, fromChat)
+		place := st.Payload["place"].(string)
+		unit := st.Payload["unit"].(string)
+		qty := int(st.Payload["qty"].(float64))
+		items := b.consParseItems(st.Payload["items"])
+		_ = b.states.Set(ctx, fromChat, dialog.StateConsCart, st.Payload)
+		b.showConsCart(ctx, fromChat, &cb.Message.MessageID, place, unit, qty, items)
+		_ = b.answerCallback(cb, "Ок", false)
+		return
+
+	case data == "cons:confirm":
+		st, _ := b.states.Get(ctx, fromChat)
+		u, _ := b.users.GetByTelegramID(ctx, cb.From.ID)
+		if u == nil || u.Status != "approved" {
+			b.editTextAndClear(fromChat, cb.Message.MessageID, "Нет доступа")
+			_ = b.answerCallback(cb, "Ошибка", true)
+			return
+		}
+		place := st.Payload["place"].(string)
+		unit := st.Payload["unit"].(string)
+		qty := int(st.Payload["qty"].(float64))
+		items := b.consParseItems(st.Payload["items"])
+		mats := st.Payload["mats_sum"].(float64)
+		rounded := st.Payload["mats_rounded"].(float64)
+		rent := st.Payload["rent"].(float64)
+		total := st.Payload["total"].(float64)
+
+		// найдём склад Расходники (только с него списываем)
+		whID, err := b.getConsumablesWarehouseID(ctx)
+		if err != nil {
+			b.editTextAndClear(fromChat, cb.Message.MessageID, "Склад 'Расходники' не найден")
+			_ = b.answerCallback(cb, "Ошибка", true)
+			return
+		}
+
+		// создаём сессию + позиции
+		sid, err := b.cons.CreateSession(ctx, u.ID, place, unit, qty, false, mats, rounded, rent, total, map[string]any{
+			"items_count": len(items),
+		})
+		if err != nil {
+			b.editTextAndClear(fromChat, cb.Message.MessageID, "Не удалось создать сессию")
+			_ = b.answerCallback(cb, "Ошибка", true)
+			return
+		}
+		// позиции + списание
+		for _, it := range items {
+			matID := int64(it["mat_id"].(float64))
+			q := int64(it["qty"].(float64))
+			price, _ := b.materials.GetPrice(ctx, matID)
+			cost := float64(q) * price
+
+			// списание (разрешено уходить в минус)
+			if err := b.inventory.Consume(ctx, u.ID, whID, matID, float64(q), "consumption"); err != nil {
+				b.editTextAndClear(fromChat, cb.Message.MessageID, "Ошибка списания")
+				_ = b.answerCallback(cb, "Ошибка", true)
+				return
+			}
+			b.maybeNotifyLowOrNegative(ctx, b.adminChat, whID, matID)
+			_ = b.cons.AddItem(ctx, sid, matID, float64(q), price, cost)
+		}
+		// инвойс (pending)
+		_, _ = b.cons.CreateInvoice(ctx, u.ID, sid, total)
+
+		// уведомление админу о подтверждённой сессии расхода/аренды
+		if b.adminChat != 0 {
+			// кто подтвердил
+			u, _ := b.users.GetByTelegramID(ctx, cb.From.ID)
+
+			// читаем данные из payload текущей сессии
+			place := st.Payload["place"].(string)
+			unit := st.Payload["unit"].(string)
+			qtyI := int(st.Payload["qty"].(float64))
+			items := b.consParseItems(st.Payload["items"])
+
+			// соберём удобочитаемый текст
+			placeRU := map[string]string{"hall": "Зал", "cabinet": "Кабинет"}
+			unitRU := map[string]string{"hour": "ч", "day": "дн"}
+			var sb strings.Builder
+
+			fmt.Fprintf(&sb, "✅ Подтверждена сессия расхода/аренды\n")
+			if u != nil {
+				fmt.Fprintf(&sb, "Мастер: %s (@%s, id %d)\n", strings.TrimSpace(u.Username), cb.From.UserName, cb.From.ID)
+			} else {
+				fmt.Fprintf(&sb, "Мастер: @%s (id %d)\n", cb.From.UserName, cb.From.ID)
+			}
+			fmt.Fprintf(&sb, "Помещение: %s\nКол-во: %d %s\n", placeRU[place], qtyI, unitRU[unit])
+
+			// материалы
+			fmt.Fprintf(&sb, "Материалы:\n")
+			var matsSum float64
+			for _, it := range items {
+				matID := int64(it["mat_id"].(float64))
+				q := int64(it["qty"].(float64))
+				name := fmt.Sprintf("ID:%d", matID)
+				if m, _ := b.materials.GetByID(ctx, matID); m != nil { // repo уже есть
+					name = m.Name
+				}
+				price, _ := b.materials.GetPrice(ctx, matID)
+				line := float64(q) * price
+				matsSum += line
+				fmt.Fprintf(&sb, "• %s — %d × %.2f = %.2f ₽\n", name, q, price, line)
+			}
+
+			// финансы: округлённая сумма материалов, аренда, итого — у нас уже посчитаны
+			rounded := st.Payload["mats_rounded"].(float64)
+			rent := st.Payload["rent"].(float64)
+			matsFact := st.Payload["mats_sum"].(float64)
+			total := rent + matsFact
+			fmt.Fprintf(&sb, "\nМатериалы (факт): %.2f ₽, округл.: %.2f ₽\nАренда: %.2f ₽\nИтого: %.2f ₽",
+				matsFact, rounded, rent, total)
+
+			b.send(tgbotapi.NewMessage(b.adminChat, sb.String()))
+		}
+
+		b.editTextAndClear(fromChat, cb.Message.MessageID, "Сессия подтверждена. Списание материалов и расчёт завершены.")
+		_ = b.states.Set(ctx, fromChat, dialog.StateIdle, dialog.Payload{})
 		_ = b.answerCallback(cb, "Готово", false)
 		return
 	}

@@ -76,6 +76,57 @@ CREATE TABLE IF NOT EXISTS supplies (
 );
 CREATE INDEX IF NOT EXISTS idx_supplies_wh_mat_time ON supplies(warehouse_id, material_id, created_at DESC);
 
+-- Тарифы аренды
+CREATE TABLE IF NOT EXISTS rent_rates (
+                                          id BIGSERIAL PRIMARY KEY,
+                                          place TEXT NOT NULL CHECK (place IN ('hall','cabinet')),
+                                          with_subscription BOOLEAN NOT NULL,
+                                          unit TEXT NOT NULL CHECK (unit IN ('hour','day')),
+                                          threshold_materials NUMERIC(12,2) NOT NULL,         -- 100 для hall/hour, 1000 для cabinet/day
+                                          price_with_materials NUMERIC(12,2) NOT NULL,        -- «наши материалы»
+                                          price_own_materials NUMERIC(12,2) NOT NULL,         -- «со своими материалами»
+                                          active_from DATE NOT NULL DEFAULT CURRENT_DATE,
+                                          active_to   DATE
+);
+
+-- Сессия расхода/аренды
+CREATE TABLE IF NOT EXISTS consumption_sessions (
+                                                    id BIGSERIAL PRIMARY KEY,
+                                                    user_id BIGINT NOT NULL REFERENCES users(id),
+                                                    place TEXT NOT NULL CHECK (place IN ('hall','cabinet')),
+                                                    unit  TEXT NOT NULL CHECK (unit IN ('hour','day')),
+                                                    qty INT NOT NULL CHECK (qty > 0),
+                                                    with_subscription BOOLEAN NOT NULL DEFAULT false,
+                                                    materials_sum NUMERIC(12,2) NOT NULL DEFAULT 0,
+                                                    rounded_materials_sum NUMERIC(12,2) NOT NULL DEFAULT 0,
+                                                    rent NUMERIC(12,2) NOT NULL DEFAULT 0,
+                                                    total NUMERIC(12,2) NOT NULL DEFAULT 0,
+                                                    status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','confirmed','canceled')),
+                                                    payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+                                                    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS consumption_items (
+                                                 id BIGSERIAL PRIMARY KEY,
+                                                 session_id BIGINT NOT NULL REFERENCES consumption_sessions(id) ON DELETE CASCADE,
+                                                 material_id BIGINT NOT NULL REFERENCES materials(id),
+                                                 qty NUMERIC(18,3) NOT NULL CHECK (qty > 0),
+                                                 unit_price NUMERIC(12,2) NOT NULL,
+                                                 cost NUMERIC(12,2) NOT NULL
+);
+
+-- Инвойс по сессии
+CREATE TABLE IF NOT EXISTS invoices (
+                                        id BIGSERIAL PRIMARY KEY,
+                                        user_id BIGINT NOT NULL REFERENCES users(id),
+                                        session_id BIGINT NOT NULL REFERENCES consumption_sessions(id),
+                                        amount NUMERIC(14,2) NOT NULL,
+                                        currency TEXT NOT NULL DEFAULT 'RUB',
+                                        status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','paid','canceled')),
+                                        payment_link TEXT NOT NULL DEFAULT '',
+                                        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 
 -- +goose Down
 DROP TABLE IF EXISTS balances;
