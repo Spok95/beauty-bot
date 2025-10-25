@@ -1951,6 +1951,7 @@ func (b *Bot) onCallback(ctx context.Context, upd tgbotapi.Update) {
 				_ = b.answerCallback(cb, "Ошибка", true)
 				return
 			}
+			b.maybeNotifyLowOrNegative(ctx, b.adminChat, whID, matID)
 			_ = b.cons.AddItem(ctx, sid, matID, float64(q), price, cost)
 		}
 		// инвойс (pending)
