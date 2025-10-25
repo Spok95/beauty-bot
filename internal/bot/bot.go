@@ -1869,7 +1869,7 @@ func (b *Bot) onCallback(ctx context.Context, upd tgbotapi.Update) {
 			rent = float64(qty) * rt.PriceOwn
 			tariff = "по ставке со своими материалами"
 		}
-		total := rent + rounded
+		total := rent + mats
 
 		// сохраним расчёт в payload
 		st.Payload["mats_sum"] = mats
@@ -1880,9 +1880,9 @@ func (b *Bot) onCallback(ctx context.Context, upd tgbotapi.Update) {
 
 		// вывод
 		txt := fmt.Sprintf(
-			"Сводка:\nПомещение: %s\nКол-во: %d %s\nМатериалы: %.2f ₽ → округление до десятков: %.2f ₽\nАренда: %.2f ₽ (%s)\nИтого к оплате: %.2f ₽",
+			"Сводка затрат для оплаты:\nПомещение: %s\nКол-во: %d %s\nМатериалы: %.2f ₽\nАренда: %.2f ₽ (%s)\nИтого к оплате: %.2f ₽",
 			map[string]string{"hall": "Зал", "cabinet": "Кабинет"}[place], qty, map[string]string{"hour": "ч", "day": "дн"}[unit],
-			mats, rounded, rent, tariff, total,
+			mats, rent, tariff, total,
 		)
 		kb := tgbotapi.NewInlineKeyboardMarkup(
 			tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("✅ Подтвердить", "cons:confirm")),
@@ -1955,6 +1955,57 @@ func (b *Bot) onCallback(ctx context.Context, upd tgbotapi.Update) {
 		}
 		// инвойс (pending)
 		_, _ = b.cons.CreateInvoice(ctx, u.ID, sid, total)
+
+		// уведомление админу о подтверждённой сессии расхода/аренды
+		if b.adminChat != 0 {
+			// кто подтвердил
+			u, _ := b.users.GetByTelegramID(ctx, cb.From.ID)
+
+			// читаем данные из payload текущей сессии
+			place := st.Payload["place"].(string)
+			unit := st.Payload["unit"].(string)
+			qtyI := int(st.Payload["qty"].(float64))
+			items := b.consParseItems(st.Payload["items"])
+
+			// соберём удобочитаемый текст
+			placeRU := map[string]string{"hall": "Зал", "cabinet": "Кабинет"}
+			unitRU := map[string]string{"hour": "ч", "day": "дн"}
+			var sb strings.Builder
+
+			fmt.Fprintf(&sb, "✅ Подтверждена сессия расхода/аренды\n")
+			if u != nil {
+				fmt.Fprintf(&sb, "Мастер: %s (@%s, id %d)\n", strings.TrimSpace(u.Username), cb.From.UserName, cb.From.ID)
+			} else {
+				fmt.Fprintf(&sb, "Мастер: @%s (id %d)\n", cb.From.UserName, cb.From.ID)
+			}
+			fmt.Fprintf(&sb, "Помещение: %s\nКол-во: %d %s\n", placeRU[place], qtyI, unitRU[unit])
+
+			// материалы
+			fmt.Fprintf(&sb, "Материалы:\n")
+			var matsSum float64
+			for _, it := range items {
+				matID := int64(it["mat_id"].(float64))
+				q := int64(it["qty"].(float64))
+				name := fmt.Sprintf("ID:%d", matID)
+				if m, _ := b.materials.GetByID(ctx, matID); m != nil { // repo уже есть
+					name = m.Name
+				}
+				price, _ := b.materials.GetPrice(ctx, matID)
+				line := float64(q) * price
+				matsSum += line
+				fmt.Fprintf(&sb, "• %s — %d × %.2f = %.2f ₽\n", name, q, price, line)
+			}
+
+			// финансы: округлённая сумма материалов, аренда, итого — у нас уже посчитаны
+			rounded := st.Payload["mats_rounded"].(float64)
+			rent := st.Payload["rent"].(float64)
+			matsFact := st.Payload["mats_sum"].(float64)
+			total := rent + matsFact
+			fmt.Fprintf(&sb, "\nМатериалы (факт): %.2f ₽, округл.: %.2f ₽\nАренда: %.2f ₽\nИтого: %.2f ₽",
+				matsFact, rounded, rent, total)
+
+			b.send(tgbotapi.NewMessage(b.adminChat, sb.String()))
+		}
 
 		b.editTextAndClear(fromChat, cb.Message.MessageID, "Сессия подтверждена. Списание материалов и расчёт завершены.")
 		_ = b.states.Set(ctx, fromChat, dialog.StateIdle, dialog.Payload{})
