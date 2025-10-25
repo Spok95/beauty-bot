@@ -627,7 +627,6 @@ func (b *Bot) showSuppliesCart(ctx context.Context, chatID int64, editMsgID *int
 		// сохраняем шаг + id нового сообщения корзины
 		b.saveLastStep(ctx, chatID, dialog.StateSupCart, st.Payload, sent.MessageID)
 	}
-	return
 }
 
 func (b *Bot) consParseItems(v any) []map[string]any {
@@ -1311,8 +1310,6 @@ func (b *Bot) onMessage(ctx context.Context, upd tgbotapi.Update) {
 			b.send(tgbotapi.NewMessage(chatID, "Некорректное число. Введите цену (руб)."))
 			return
 		}
-		whID = int64(st.Payload["wh_id"].(float64))
-		matID = int64(st.Payload["mat_id"].(float64))
 		qty := int64(st.Payload["qty"].(float64)) // мы сохраняли как float64, но значение целое
 
 		// Добавляем позицию в payload["items"]
