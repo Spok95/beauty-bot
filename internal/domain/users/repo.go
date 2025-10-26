@@ -111,3 +111,19 @@ func (r *Repo) ListByRole(ctx context.Context, role Role, status Status) ([]*Use
 	}
 	return out, nil
 }
+
+func (r *Repo) GetByID(ctx context.Context, id int64) (*User, error) {
+	row := r.pool.QueryRow(ctx, `
+		SELECT id, telegram_id, COALESCE(username, ''), role, status, created_at, updated_at
+		FROM users
+		WHERE id = $1
+	`, id)
+	var u User
+	if err := row.Scan(&u.ID, &u.TelegramID, &u.Username, &u.Role, &u.Status, &u.CreatedAt, &u.UpdatedAt); err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &u, nil
+}

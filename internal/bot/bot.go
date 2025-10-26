@@ -165,11 +165,11 @@ func adminReplyKeyboard() tgbotapi.ReplyKeyboardMarkup {
 	return tgbotapi.ReplyKeyboardMarkup{
 		ResizeKeyboard: true,
 		Keyboard: [][]tgbotapi.KeyboardButton{
-			{tgbotapi.NewKeyboardButton("Список команд")},
 			{tgbotapi.NewKeyboardButton("Склады"), tgbotapi.NewKeyboardButton("Категории")},
 			{tgbotapi.NewKeyboardButton("Материалы")},
-			{tgbotapi.NewKeyboardButton("Остатки")},
-			{tgbotapi.NewKeyboardButton("Поставки")},
+			{tgbotapi.NewKeyboardButton("Остатки"), tgbotapi.NewKeyboardButton("Поставки")},
+			{tgbotapi.NewKeyboardButton("Абонементы")},
+			{tgbotapi.NewKeyboardButton("Список команд")},
 		},
 	}
 }
@@ -701,6 +701,62 @@ func (b *Bot) showConsCart(ctx context.Context, chatID int64, editMsgID *int, pl
 	}
 }
 
+// showSubsMenu Меню «Абонементы» для админа
+func (b *Bot) showSubsMenu(chatID int64, editMsgID *int) {
+	kb := tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("➕ Создать абонемент", "adm:subs:add"),
+			// tgbotapi.NewInlineKeyboardButtonData("📄 Список (текущий месяц)", "adm:subs:list"), // позже
+		),
+		navKeyboard(false, true).InlineKeyboard[0],
+	)
+	text := "Абонементы — выберите действие"
+	if editMsgID != nil {
+		b.send(tgbotapi.NewEditMessageTextAndMarkup(chatID, *editMsgID, text, kb))
+	} else {
+		m := tgbotapi.NewMessage(chatID, text)
+		m.ReplyMarkup = kb
+		b.send(m)
+	}
+}
+
+// showSubsPickUser — выбор мастера для абонемента
+func (b *Bot) showSubsPickUser(ctx context.Context, chatID int64, editMsgID int) {
+	list, err := b.users.ListByRole(ctx, users.RoleMaster, users.StatusApproved)
+	if err != nil || len(list) == 0 {
+		b.editTextAndClear(chatID, editMsgID, "Нет утверждённых мастеров.")
+		return
+	}
+
+	rows := [][]tgbotapi.InlineKeyboardButton{}
+	for _, u := range list {
+		title := strings.TrimSpace(u.Username) // в Username у нас «ФИО/отображаемое имя»
+		if title == "" {
+			title = fmt.Sprintf("id %d", u.ID)
+		}
+		rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(title, fmt.Sprintf("adm:subs:user:%d", u.ID)),
+		))
+	}
+	rows = append(rows, navKeyboard(true, true).InlineKeyboard[0])
+
+	kb := tgbotapi.NewInlineKeyboardMarkup(rows...)
+	b.send(tgbotapi.NewEditMessageTextAndMarkup(chatID, editMsgID, "Выберите мастера:", kb))
+}
+
+// showSubsPickPlaceUnit Выбор места/единицы
+func (b *Bot) showSubsPickPlaceUnit(chatID int64, editMsgID int, uid int64) {
+	kb := tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			// Сразу задаём и место и единицу:
+			tgbotapi.NewInlineKeyboardButtonData("Зал (часы)", fmt.Sprintf("adm:subs:pu:%d:hall:hour", uid)),
+			tgbotapi.NewInlineKeyboardButtonData("Кабинет (дни)", fmt.Sprintf("adm:subs:pu:%d:cabinet:day", uid)),
+		),
+		navKeyboard(true, true).InlineKeyboard[0],
+	)
+	b.send(tgbotapi.NewEditMessageTextAndMarkup(chatID, editMsgID, "Выберите помещение:", kb))
+}
+
 func roundTo10(x float64) float64 {
 	// до ближайшего десятка
 	return float64(int((x+5)/10) * 10)
@@ -972,18 +1028,18 @@ func (b *Bot) onMessage(ctx context.Context, upd tgbotapi.Update) {
 
 		case "help":
 			b.send(tgbotapi.NewMessage(chatID,
-				"Команды:\n/start — начать регистрацию/работу\n/help — помощь\n/admin — админ-меню (для админов)"))
+				"Команды:\n/start — начать регистрацию/работу\n/help — помощь"))
 			return
 
 		case "admin":
-			// Только для admin
+			// Только для admin — показываем техсообщение без меню
 			u, _ := b.users.GetByTelegramID(ctx, tgID)
 			if u == nil || u.Role != users.RoleAdmin || u.Status != users.StatusApproved {
 				b.send(tgbotapi.NewMessage(chatID, "Доступ запрещён"))
 				return
 			}
-			_ = b.states.Set(ctx, chatID, dialog.StateAdmMenu, dialog.Payload{})
-			b.adminMenu(chatID, nil)
+			b.send(tgbotapi.NewMessage(chatID,
+				"Раздел администрирования временно выключен. Настройка тарифов будет доступна через кнопку «Установка тарифов»."))
 			return
 
 		case "rent":
@@ -1064,7 +1120,7 @@ func (b *Bot) onMessage(ctx context.Context, upd tgbotapi.Update) {
 	}
 
 	// Кнопки нижней панели для админа
-	if msg.Text == "Склады" || msg.Text == "Категории" || msg.Text == "Материалы" || msg.Text == "Остатки" || msg.Text == "Поставки" {
+	if msg.Text == "Склады" || msg.Text == "Категории" || msg.Text == "Материалы" || msg.Text == "Остатки" || msg.Text == "Поставки" || msg.Text == "Абонементы" {
 		u, _ := b.users.GetByTelegramID(ctx, tgID)
 		if u == nil || u.Role != users.RoleAdmin || u.Status != users.StatusApproved {
 			// игнорируем для не-админов
@@ -1088,6 +1144,10 @@ func (b *Bot) onMessage(ctx context.Context, upd tgbotapi.Update) {
 		case "Поставки":
 			_ = b.states.Set(ctx, chatID, dialog.StateSupMenu, dialog.Payload{})
 			b.showSuppliesMenu(chatID, nil)
+			return
+		case "Абонементы":
+			_ = b.states.Set(ctx, chatID, dialog.StateAdmSubsMenu, dialog.Payload{})
+			b.showSubsMenu(chatID, nil)
 			return
 		}
 		return
@@ -1397,6 +1457,58 @@ func (b *Bot) onMessage(ctx context.Context, upd tgbotapi.Update) {
 		_ = b.states.Set(ctx, chatID, dialog.StateConsCart, st.Payload)
 		b.showConsCart(ctx, chatID, nil, st.Payload["place"].(string), st.Payload["unit"].(string), int(st.Payload["qty"].(float64)), items)
 		return
+
+	case dialog.StateAdmSubsEnterQty:
+		s := strings.TrimSpace(msg.Text)
+		if strings.Contains(s, ",") {
+			s = strings.ReplaceAll(s, ",", ".")
+		}
+		if strings.Contains(s, ".") {
+			b.send(tgbotapi.NewMessage(chatID, "Введите целое число (без дробной части)."))
+			return
+		}
+		n, err := strconv.ParseInt(s, 10, 64)
+		if err != nil || n <= 0 {
+			b.send(tgbotapi.NewMessage(chatID, "Некорректное значение. Введите целое положительное число."))
+			return
+		}
+
+		st.Payload["total"] = float64(n)
+		_ = b.states.Set(ctx, chatID, dialog.StateAdmSubsConfirm, st.Payload)
+
+		place := st.Payload["place"].(string)
+		unit := st.Payload["unit"].(string)
+		uid := int64(st.Payload["uid"].(float64))
+		month := time.Now().Format("2006-01")
+
+		// Для превью: найдём пользователя по uid
+		var title string
+		if u, _ := b.users.GetByID(ctx, uid); u != nil {
+			title = strings.TrimSpace(u.Username) // у нас «ФИО/отображаемое имя» хранится в Username
+			if title == "" {
+				title = fmt.Sprintf("id %d", u.ID)
+			}
+		} else {
+			title = fmt.Sprintf("id %d", uid)
+		}
+
+		preview := fmt.Sprintf(
+			"Подтвердите создание абонемента:\nМастер: %s\nМесяц: %s\nМесто: %s\nЕдиница: %s\nОбъём: %d",
+			title, month,
+			map[string]string{"hall": "Зал", "cabinet": "Кабинет"}[place],
+			map[string]string{"hour": "часы", "day": "дни"}[unit],
+			n,
+		)
+		kb := tgbotapi.NewInlineKeyboardMarkup(
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("✅ Подтвердить", "adm:subs:confirm"),
+			),
+			navKeyboard(true, true).InlineKeyboard[0],
+		)
+		m := tgbotapi.NewMessage(chatID, preview)
+		m.ReplyMarkup = kb
+		b.send(m)
+		return
 	}
 }
 
@@ -1595,6 +1707,34 @@ func (b *Bot) onCallback(ctx context.Context, upd tgbotapi.Update) {
 			items := b.consParseItems(st.Payload["items"])
 			_ = b.states.Set(ctx, fromChat, dialog.StateConsCart, st.Payload)
 			b.showConsCart(ctx, fromChat, &cb.Message.MessageID, st.Payload["place"].(string), st.Payload["unit"].(string), int(st.Payload["qty"].(float64)), items)
+
+		case dialog.StateAdmSubsMenu:
+			b.showSubsMenu(fromChat, &cb.Message.MessageID)
+			_ = b.states.Set(ctx, fromChat, dialog.StateAdmSubsMenu, dialog.Payload{})
+
+		case dialog.StateAdmSubsPickUser:
+			b.showSubsMenu(fromChat, &cb.Message.MessageID)
+			_ = b.states.Set(ctx, fromChat, dialog.StateAdmSubsMenu, dialog.Payload{})
+
+		case dialog.StateAdmSubsPickPlaceUnit:
+			b.showSubsPickUser(ctx, fromChat, cb.Message.MessageID)
+			_ = b.states.Set(ctx, fromChat, dialog.StateAdmSubsPickUser, dialog.Payload{})
+
+		case dialog.StateAdmSubsEnterQty:
+			// Назад к выбору места/единицы
+			if v, ok := st.Payload["uid"]; ok {
+				uid := int64(v.(float64))
+				b.showSubsPickPlaceUnit(fromChat, cb.Message.MessageID, uid)
+				_ = b.states.Set(ctx, fromChat, dialog.StateAdmSubsPickPlaceUnit, st.Payload)
+			} else {
+				b.showSubsPickUser(ctx, fromChat, cb.Message.MessageID)
+				_ = b.states.Set(ctx, fromChat, dialog.StateAdmSubsPickUser, dialog.Payload{})
+			}
+
+		case dialog.StateAdmSubsConfirm:
+			// назад к вводу количества
+			b.editTextWithNav(fromChat, cb.Message.MessageID, "Введите объём на месяц (целое число):")
+			_ = b.states.Set(ctx, fromChat, dialog.StateAdmSubsEnterQty, st.Payload)
 
 		default:
 			b.editTextAndClear(fromChat, cb.Message.MessageID, "Действие неактуально.")
@@ -1940,6 +2080,56 @@ func (b *Bot) onCallback(ctx context.Context, upd tgbotapi.Update) {
 		_ = b.answerCallback(cb, "Ок", false)
 		return
 
+	case data == "adm:subs:add":
+		_ = b.states.Set(ctx, fromChat, dialog.StateAdmSubsPickUser, dialog.Payload{})
+		b.showSubsPickUser(ctx, fromChat, cb.Message.MessageID)
+		_ = b.answerCallback(cb, "Ок", false)
+		return
+
+	case strings.HasPrefix(data, "adm:subs:user:"):
+		uid, _ := strconv.ParseInt(strings.TrimPrefix(data, "adm:subs:user:"), 10, 64)
+		_ = b.states.Set(ctx, fromChat, dialog.StateAdmSubsPickPlaceUnit, dialog.Payload{"uid": float64(uid)})
+		b.showSubsPickPlaceUnit(fromChat, cb.Message.MessageID, uid)
+		_ = b.answerCallback(cb, "Ок", false)
+		return
+
+	case strings.HasPrefix(data, "adm:subs:pu:"):
+		// формат: adm:subs:pu:<uid>:<place>:<unit>
+		parts := strings.Split(strings.TrimPrefix(data, "adm:subs:pu:"), ":")
+		if len(parts) != 3 {
+			_ = b.answerCallback(cb, "Некорректные данные", true)
+			return
+		}
+		uid, _ := strconv.ParseInt(parts[0], 10, 64)
+		place := parts[1] // "hall"|"cabinet"
+		unit := parts[2]  // "hour"|"day"
+		_ = b.states.Set(ctx, fromChat, dialog.StateAdmSubsEnterQty, dialog.Payload{
+			"uid": float64(uid), "place": place, "unit": unit,
+		})
+		b.editTextWithNav(fromChat, cb.Message.MessageID, "Введите объём на месяц (целое число):")
+		_ = b.answerCallback(cb, "Ок", false)
+		return
+
+	case data == "adm:subs:confirm":
+		st, _ := b.states.Get(ctx, fromChat)
+		uid := int64(st.Payload["uid"].(float64))
+		place := st.Payload["place"].(string)
+		unit := st.Payload["unit"].(string)
+		total := int(st.Payload["total"].(float64))
+		month := time.Now().Format("2006-01")
+
+		if _, err := b.subs.CreateOrSetTotal(ctx, uid, place, unit, month, total); err != nil {
+			b.editTextAndClear(fromChat, cb.Message.MessageID, "Ошибка сохранения абонемента")
+			_ = b.answerCallback(cb, "Ошибка", true)
+			return
+		}
+
+		b.editTextAndClear(fromChat, cb.Message.MessageID, "Абонемент сохранён.")
+		_ = b.states.Set(ctx, fromChat, dialog.StateAdmSubsMenu, dialog.Payload{})
+		b.showSubsMenu(fromChat, nil)
+		_ = b.answerCallback(cb, "Готово", false)
+		return
+
 		// Остатки: выбор склада -> список
 	case strings.HasPrefix(data, "st:list:"):
 		whID, _ := strconv.ParseInt(strings.TrimPrefix(data, "st:list:"), 10, 64)
@@ -2087,8 +2277,14 @@ func (b *Bot) onCallback(ctx context.Context, upd tgbotapi.Update) {
 		if place == "cabinet" {
 			unit = "day"
 		}
+		st, _ := b.states.Get(ctx, fromChat)
+		withSub := false
+		if v, ok := st.Payload["with_sub"].(bool); ok {
+			withSub = v
+		}
+
 		_ = b.states.Set(ctx, fromChat, dialog.StateConsQty, dialog.Payload{
-			"place": place, "unit": unit, "with_sub": false,
+			"place": place, "unit": unit, "with_sub": withSub,
 		})
 		b.editTextWithNav(fromChat, cb.Message.MessageID, fmt.Sprintf("Введите количество (%s):", map[string]string{"hour": "часы", "day": "дни"}[unit]))
 		_ = b.answerCallback(cb, "Ок", false)
@@ -2148,7 +2344,7 @@ func (b *Bot) onCallback(ctx context.Context, upd tgbotapi.Update) {
 		rt, ok, _ := b.cons.GetRate(ctx, place, unit, withSub)
 		if !ok {
 			b.send(tgbotapi.NewMessage(fromChat, "Тарифы не настроены. Сообщение отправлено администратору."))
-			note := fmt.Sprintf("⚠️ Нет активных тарифов для: %s / %s (%s). Настройте /admin → Тарифы.",
+			note := fmt.Sprintf("⚠️ Нет активных тарифов для: %s / %s (%s). Настройте тарифы.",
 				map[string]string{"hall": "Зал", "cabinet": "Кабинет"}[place],
 				map[string]string{"hour": "час", "day": "день"}[unit],
 				map[bool]string{true: "с абонементом", false: "без абонемента"}[withSub],

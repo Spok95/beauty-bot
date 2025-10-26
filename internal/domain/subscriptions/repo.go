@@ -45,3 +45,18 @@ func (r *Repo) AddUsage(ctx context.Context, id int64, qty int) error {
 	_, err := r.db.Exec(ctx, q, id, qty)
 	return err
 }
+
+func (r *Repo) CreateOrSetTotal(ctx context.Context, userID int64, place, unit, month string, total int) (int64, error) {
+	const q = `
+		INSERT INTO subscriptions (user_id, place, unit, month, total_qty)
+		VALUES ($1, $2, $3, $4, $5)
+		ON CONFLICT ON CONSTRAINT uq_subs
+		DO UPDATE SET total_qty = EXCLUDED.total_qty, updated_at = NOW()
+		RETURNING id;
+	`
+	var id int64
+	if err := r.db.QueryRow(ctx, q, userID, place, unit, month, total).Scan(&id); err != nil {
+		return 0, err
+	}
+	return id, nil
+}
