@@ -951,31 +951,6 @@ func (b *Bot) notifyStockRecipients(ctx context.Context, text string) {
 	}
 }
 
-/*** ADMIN UI ***/
-
-func (b *Bot) adminMenu(chatID int64, editMessageID *int) {
-	kb := tgbotapi.NewInlineKeyboardMarkup(
-		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("➕ Склад", "adm:wh:add"),
-			tgbotapi.NewInlineKeyboardButtonData("📄 Склады", "adm:wh:list"),
-		),
-		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("➕ Категория", "adm:cat:add"),
-			tgbotapi.NewInlineKeyboardButtonData("📄 Категории", "adm:cat:list"),
-		),
-		navKeyboard(false, true).InlineKeyboard[0],
-	)
-	text := "Админ-меню: выберите действие"
-	if editMessageID != nil {
-		edit := tgbotapi.NewEditMessageTextAndMarkup(chatID, *editMessageID, text, kb)
-		b.send(edit)
-	} else {
-		m := tgbotapi.NewMessage(chatID, text)
-		m.ReplyMarkup = kb
-		b.send(m)
-	}
-}
-
 /*** MESSAGE HANDLER ***/
 
 func (b *Bot) onMessage(ctx context.Context, upd tgbotapi.Update) {

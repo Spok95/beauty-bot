@@ -44,7 +44,6 @@ func (r *Repo) CreateInvoice(ctx context.Context, userID, sessionID int64, amoun
 	return id, row.Scan(&id)
 }
 
-/* Ставки аренды (если нет в БД — вернём ok=false) */
 type Rate struct {
 	Threshold float64
 	PriceWith float64
