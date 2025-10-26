@@ -16,6 +16,7 @@ import (
 	"github.com/Spok95/beauty-bot/internal/domain/consumption"
 	"github.com/Spok95/beauty-bot/internal/domain/inventory"
 	"github.com/Spok95/beauty-bot/internal/domain/materials"
+	subs "github.com/Spok95/beauty-bot/internal/domain/subscriptions"
 	"github.com/Spok95/beauty-bot/internal/domain/users"
 	"github.com/Spok95/beauty-bot/internal/infra/db"
 	httpx "github.com/Spok95/beauty-bot/internal/infra/http"
@@ -96,6 +97,7 @@ func main() {
 	materialsRepo := materials.NewRepo(pool)
 	inventoryRepo := inventory.NewRepo(pool)
 	consRepo := consumption.NewRepo(pool)
+	subsRepo := subs.NewRepo(pool)
 
 	srv := httpx.New(cfg.HTTP.Addr, cfg.Metrics.Enabled)
 	go func() {
@@ -114,7 +116,7 @@ func main() {
 		api.Debug = true
 	}
 
-	tg := bot.New(api, log, usersRepo, stateRepo, cfg.Telegram.AdminChatID, catalogRepo, materialsRepo, inventoryRepo, consRepo)
+	tg := bot.New(api, log, usersRepo, stateRepo, cfg.Telegram.AdminChatID, catalogRepo, materialsRepo, inventoryRepo, consRepo, subsRepo)
 
 	go func() {
 		if err := tg.Run(ctx, cfg.Telegram.RequestTimeoutSec); err != nil {

@@ -127,19 +127,6 @@ CREATE TABLE IF NOT EXISTS invoices (
                                         created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- ===== ТАРИФЫ АРЕНДЫ =====
-CREATE TABLE IF NOT EXISTS rent_rates (
-                                          id BIGSERIAL PRIMARY KEY,
-                                          place TEXT NOT NULL CHECK (place IN ('hall','cabinet')),
-                                          with_subscription BOOLEAN NOT NULL,
-                                          unit TEXT NOT NULL CHECK (unit IN ('hour','day')),
-                                          threshold_materials NUMERIC(12,2) NOT NULL,
-                                          price_with_materials NUMERIC(12,2) NOT NULL,
-                                          price_own_materials NUMERIC(12,2) NOT NULL,
-                                          active_from DATE NOT NULL DEFAULT CURRENT_DATE,
-                                          active_to   DATE
-);
-
 -- ===== СИДЫ (без абонемента) =====
 -- Общий зал (почасово)
 INSERT INTO rent_rates (place, with_subscription, unit, threshold_materials, price_with_materials, price_own_materials, active_from)
@@ -159,9 +146,31 @@ WHERE NOT EXISTS (
       AND (active_to IS NULL OR active_to>=CURRENT_DATE)
 );
 
+CREATE TABLE IF NOT EXISTS subscriptions (
+                                             id          BIGSERIAL PRIMARY KEY,
+                                             user_id     BIGINT      NOT NULL,
+                                             place       TEXT        NOT NULL,   -- 'hall' | 'cabinet'
+                                             unit        TEXT        NOT NULL,   -- 'hour' | 'day'
+                                             month       TEXT        NOT NULL,   -- 'YYYY-MM'
+                                             total_qty   INT         NOT NULL,   -- куплено часов/дней
+                                             used_qty    INT         NOT NULL DEFAULT 0,
+                                             created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                                             updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                                             CONSTRAINT uq_subs UNIQUE (user_id, place, unit, month)
+);
+
+CREATE INDEX IF NOT EXISTS idx_subs_user_month ON subscriptions (user_id, month);
+
 -- +goose Down
 DROP TABLE IF EXISTS balances;
 DROP TABLE IF EXISTS materials;
 DROP TABLE IF EXISTS material_categories;
 DROP TABLE IF EXISTS warehouses;
 DROP TABLE IF EXISTS users;
+DROP TABLE IF EXISTS movements;
+DROP TABLE IF EXISTS supplies;
+DROP TABLE IF EXISTS rent_rates;
+DROP TABLE IF EXISTS consumption_sessions;
+DROP TABLE IF EXISTS consumption_items;
+DROP TABLE IF EXISTS invoices;
+DROP TABLE IF EXISTS subscriptions;
