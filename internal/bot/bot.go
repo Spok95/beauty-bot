@@ -6,10 +6,12 @@ import (
 	"log/slog"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/Spok95/beauty-bot/internal/domain/consumption"
 	"github.com/Spok95/beauty-bot/internal/domain/inventory"
 	"github.com/Spok95/beauty-bot/internal/domain/materials"
+	subs "github.com/Spok95/beauty-bot/internal/domain/subscriptions"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 
 	"github.com/Spok95/beauty-bot/internal/dialog"
@@ -30,18 +32,20 @@ type Bot struct {
 	materials *materials.Repo
 	inventory *inventory.Repo
 	cons      *consumption.Repo
+	subs      *subs.Repo
 }
 
 func New(api *tgbotapi.BotAPI, log *slog.Logger,
 	usersRepo *users.Repo, statesRepo *dialog.Repo,
 	adminChatID int64, catalogRepo *catalog.Repo,
-	materialsRepo *materials.Repo, inventoryRepo *inventory.Repo, consRepo *consumption.Repo) *Bot {
+	materialsRepo *materials.Repo, inventoryRepo *inventory.Repo,
+	consRepo *consumption.Repo, subsRepo *subs.Repo) *Bot {
 
 	return &Bot{
 		api: api, log: log, users: usersRepo, states: statesRepo,
 		adminChat: adminChatID, catalog: catalogRepo,
 		materials: materialsRepo, inventory: inventoryRepo,
-		cons: consRepo,
+		cons: consRepo, subs: subsRepo,
 	}
 }
 
@@ -139,6 +143,23 @@ func confirmKeyboard() tgbotapi.InlineKeyboardMarkup {
 	)
 }
 
+func (b *Bot) consPlaceKeyboard(withSub bool) tgbotapi.InlineKeyboardMarkup {
+	toggle := "Абонемент: выкл"
+	if withSub {
+		toggle = "Абонемент: вкл"
+	}
+	return tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("Общий зал", "cons:place:hall"),
+			tgbotapi.NewInlineKeyboardButtonData("Кабинет", "cons:place:cabinet"),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(toggle, "cons:sub:tg"),
+		),
+		navKeyboard(false, true).InlineKeyboard[0],
+	)
+}
+
 // adminReplyKeyboard Нижняя панель (ReplyKeyboard) для админа
 func adminReplyKeyboard() tgbotapi.ReplyKeyboardMarkup {
 	return tgbotapi.ReplyKeyboardMarkup{
@@ -158,6 +179,7 @@ func masterReplyKeyboard() tgbotapi.ReplyKeyboardMarkup {
 		ResizeKeyboard: true,
 		Keyboard: [][]tgbotapi.KeyboardButton{
 			{tgbotapi.NewKeyboardButton("Расход/Аренда")},
+			{tgbotapi.NewKeyboardButton("Мои абонементы")},
 			{tgbotapi.NewKeyboardButton("Список команд")},
 		},
 	}
@@ -971,13 +993,7 @@ func (b *Bot) onMessage(ctx context.Context, upd tgbotapi.Update) {
 				return
 			}
 			_ = b.states.Set(ctx, chatID, dialog.StateConsPlace, dialog.Payload{"with_sub": false})
-			kb := tgbotapi.NewInlineKeyboardMarkup(
-				tgbotapi.NewInlineKeyboardRow(
-					tgbotapi.NewInlineKeyboardButtonData("Общий зал", "cons:place:hall"),
-					tgbotapi.NewInlineKeyboardButtonData("Кабинет", "cons:place:cabinet"),
-				),
-				navKeyboard(false, true).InlineKeyboard[0],
-			)
+			kb := b.consPlaceKeyboard(false)
 			m := tgbotapi.NewMessage(chatID, "Выберите помещение:")
 			m.ReplyMarkup = kb
 			b.send(m)
@@ -996,16 +1012,37 @@ func (b *Bot) onMessage(ctx context.Context, upd tgbotapi.Update) {
 			return
 		}
 		_ = b.states.Set(ctx, chatID, dialog.StateConsPlace, dialog.Payload{"with_sub": false})
-		kb := tgbotapi.NewInlineKeyboardMarkup(
-			tgbotapi.NewInlineKeyboardRow(
-				tgbotapi.NewInlineKeyboardButtonData("Общий зал", "cons:place:hall"),
-				tgbotapi.NewInlineKeyboardButtonData("Кабинет", "cons:place:cabinet"),
-			),
-			navKeyboard(false, true).InlineKeyboard[0],
-		)
+		kb := b.consPlaceKeyboard(false)
 		m := tgbotapi.NewMessage(chatID, "Выберите помещение:")
 		m.ReplyMarkup = kb
 		b.send(m)
+		return
+	}
+
+	if msg.Text == "Мои абонементы" {
+		u, _ := b.users.GetByTelegramID(ctx, tgID)
+		if u == nil || u.Status != users.StatusApproved || u.Role != users.RoleMaster {
+			return
+		}
+		month := time.Now().Format("2006-01")
+		list, err := b.subs.ListByUserMonth(ctx, u.ID, month)
+		if err != nil || len(list) == 0 {
+			b.send(tgbotapi.NewMessage(chatID, "На текущий месяц абонементов нет."))
+			return
+		}
+		var sb strings.Builder
+		sb.WriteString("Мои абонементы (текущий месяц):\n")
+		placeRU := map[string]string{"hall": "Зал", "cabinet": "Кабинет"}
+		unitRU := map[string]string{"hour": "ч", "day": "дн"}
+		for _, s := range list {
+			left := s.TotalQty - s.UsedQty
+			if left < 0 {
+				left = 0
+			}
+			sb.WriteString(fmt.Sprintf("— %s, %s: %d/%d (остаток %d)\n",
+				placeRU[s.Place], unitRU[s.Unit], s.UsedQty, s.TotalQty, left))
+		}
+		b.send(tgbotapi.NewMessage(chatID, sb.String()))
 		return
 	}
 
@@ -1066,13 +1103,7 @@ func (b *Bot) onMessage(ctx context.Context, upd tgbotapi.Update) {
 		_ = b.states.Set(ctx, chatID, dialog.StateConsPlace, dialog.Payload{
 			"with_sub": false,
 		})
-		kb := tgbotapi.NewInlineKeyboardMarkup(
-			tgbotapi.NewInlineKeyboardRow(
-				tgbotapi.NewInlineKeyboardButtonData("Общий зал", "cons:place:hall"),
-				tgbotapi.NewInlineKeyboardButtonData("Кабинет", "cons:place:cabinet"),
-			),
-			navKeyboard(false, true).InlineKeyboard[0],
-		)
+		kb := b.consPlaceKeyboard(false)
 		m := tgbotapi.NewMessage(chatID, "Выберите помещение:")
 		m.ReplyMarkup = kb
 		b.send(m)
@@ -2036,6 +2067,19 @@ func (b *Bot) onCallback(ctx context.Context, upd tgbotapi.Update) {
 		_ = b.answerCallback(cb, "Готово", false)
 		return
 
+	case data == "cons:sub:tg":
+		st, _ := b.states.Get(ctx, fromChat)
+		cur := false
+		if v, ok := st.Payload["with_sub"].(bool); ok {
+			cur = v
+		}
+		st.Payload["with_sub"] = !cur
+		_ = b.states.Set(ctx, fromChat, dialog.StateConsPlace, st.Payload)
+		kb := b.consPlaceKeyboard(!cur)
+		b.send(tgbotapi.NewEditMessageTextAndMarkup(fromChat, cb.Message.MessageID, "Выберите помещение:", kb))
+		_ = b.answerCallback(cb, "Ок", false)
+		return
+
 		// Выбор помещения
 	case strings.HasPrefix(data, "cons:place:"):
 		place := strings.TrimPrefix(data, "cons:place:")
@@ -2096,12 +2140,18 @@ func (b *Bot) onCallback(ctx context.Context, upd tgbotapi.Update) {
 		rounded := roundTo10(mats)
 
 		// тарифы: пытаемся взять из rent_rates, иначе дефолт
-		rt, ok, _ := b.cons.GetRate(ctx, place, unit, false)
+		withSub := false
+		if v, ok := st.Payload["with_sub"].(bool); ok {
+			withSub = v
+		}
+
+		rt, ok, _ := b.cons.GetRate(ctx, place, unit, withSub)
 		if !ok {
 			b.send(tgbotapi.NewMessage(fromChat, "Тарифы не настроены. Сообщение отправлено администратору."))
-			note := fmt.Sprintf("⚠️ Нет активных тарифов для: %s / %s (без абонемента). Настройте /admin → Тарифы.",
+			note := fmt.Sprintf("⚠️ Нет активных тарифов для: %s / %s (%s). Настройте /admin → Тарифы.",
 				map[string]string{"hall": "Зал", "cabinet": "Кабинет"}[place],
 				map[string]string{"hour": "час", "day": "день"}[unit],
+				map[bool]string{true: "с абонементом", false: "без абонемента"}[withSub],
 			)
 			if b.adminChat != 0 {
 				b.send(tgbotapi.NewMessage(b.adminChat, note))
@@ -2111,13 +2161,14 @@ func (b *Bot) onCallback(ctx context.Context, upd tgbotapi.Update) {
 		need := float64(qty) * rt.Threshold
 		var rent float64
 		var tariff string
-		if rounded >= need {
+		if roundTo10(mats) >= need {
 			rent = float64(qty) * rt.PriceWith
 			tariff = "по ставке с материалами"
 		} else {
 			rent = float64(qty) * rt.PriceOwn
 			tariff = "по ставке со своими материалами"
 		}
+
 		total := rent + mats
 
 		// сохраним расчёт в payload
@@ -2128,8 +2179,12 @@ func (b *Bot) onCallback(ctx context.Context, upd tgbotapi.Update) {
 		_ = b.states.Set(ctx, fromChat, dialog.StateConsSummary, st.Payload)
 
 		// вывод
+		subBadge := ""
+		if withSub {
+			subBadge = " (с абонементом)"
+		}
 		txt := fmt.Sprintf(
-			"Сводка затрат для оплаты:\nПомещение: %s\nКол-во: %d %s\nМатериалы: %.2f ₽\nАренда: %.2f ₽ (%s)\nИтого к оплате: %.2f ₽",
+			"Сводка затрат для оплаты"+subBadge+":\nПомещение: %s\nКол-во: %d %s\nМатериалы: %.2f ₽\nАренда: %.2f ₽ (%s)\nИтого к оплате: %.2f ₽",
 			map[string]string{"hall": "Зал", "cabinet": "Кабинет"}[place], qty, map[string]string{"hour": "ч", "day": "дн"}[unit],
 			mats, rent, tariff, total,
 		)
@@ -2178,8 +2233,13 @@ func (b *Bot) onCallback(ctx context.Context, upd tgbotapi.Update) {
 			return
 		}
 
+		withSub := false
+		if v, ok := st.Payload["with_sub"].(bool); ok {
+			withSub = v
+		}
+
 		// создаём сессию + позиции
-		sid, err := b.cons.CreateSession(ctx, u.ID, place, unit, qty, false, mats, rounded, rent, total, map[string]any{
+		sid, err := b.cons.CreateSession(ctx, u.ID, place, unit, qty, withSub, mats, rounded, rent, total, map[string]any{
 			"items_count": len(items),
 		})
 		if err != nil {
@@ -2187,6 +2247,22 @@ func (b *Bot) onCallback(ctx context.Context, upd tgbotapi.Update) {
 			_ = b.answerCallback(cb, "Ошибка", true)
 			return
 		}
+		// Учёт абонемента: спишем использованное количество (часы/дни) за текущий месяц
+		if withSub && b.subs != nil {
+			month := time.Now().Format("2006-01")
+			if s, err := b.subs.GetActive(ctx, u.ID, place, unit, month); err == nil && s != nil {
+				_ = b.subs.AddUsage(ctx, s.ID, qty)
+			} else {
+				// просто подсветим админу, что абонемента нет
+				if b.adminChat != 0 {
+					b.send(tgbotapi.NewMessage(b.adminChat,
+						fmt.Sprintf("ℹ️ У мастера id %d нет абонемента на %s/%s (%s), но сессия проведена с флагом абонемента.",
+							u.ID, map[string]string{"hall": "Зал", "cabinet": "Кабинет"}[place],
+							map[string]string{"hour": "час", "day": "день"}[unit], month)))
+				}
+			}
+		}
+
 		pairs := make([][2]int64, 0, len(items))
 		// позиции + списание
 		for _, it := range items {
