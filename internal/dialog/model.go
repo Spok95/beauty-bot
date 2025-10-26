@@ -62,6 +62,20 @@ const (
 	StateAdmSubsPickPlaceUnit State = "adm_subs_pick_place_unit"
 	StateAdmSubsEnterQty      State = "adm_subs_enter_qty"
 	StateAdmSubsConfirm       State = "adm_subs_confirm"
+
+	// Админка тарифов аренды
+	StateAdmRatesMenu    State = "adm:rates:menu"
+	StateAdmRatesPickPU  State = "adm:rates:pick_pu"  // выбор место/единица
+	StateAdmRatesPickSub State = "adm:rates:pick_sub" // тумблер абонемента
+	StateAdmRatesList    State = "adm:rates:list"     // список ступеней
+
+	// Создание ступени
+	StateAdmRatesCreateMin       State = "adm:rates:create:min"
+	StateAdmRatesCreateMax       State = "adm:rates:create:max"
+	StateAdmRatesCreateThreshold State = "adm:rates:create:thr"
+	StateAdmRatesCreatePriceWith State = "adm:rates:create:pwith"
+	StateAdmRatesCreatePriceOwn  State = "adm:rates:create:pown"
+	StateAdmRatesConfirm         State = "adm:rates:confirm"
 )
 
 type Payload map[string]any

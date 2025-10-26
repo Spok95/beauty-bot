@@ -77,17 +77,40 @@ CREATE TABLE IF NOT EXISTS supplies (
 CREATE INDEX IF NOT EXISTS idx_supplies_wh_mat_time ON supplies(warehouse_id, material_id, created_at DESC);
 
 -- Тарифы аренды
+-- Тарифы аренды (ступени)
 CREATE TABLE IF NOT EXISTS rent_rates (
-                                          id BIGSERIAL PRIMARY KEY,
-                                          place TEXT NOT NULL CHECK (place IN ('hall','cabinet')),
-                                          with_subscription BOOLEAN NOT NULL,
-                                          unit TEXT NOT NULL CHECK (unit IN ('hour','day')),
-                                          threshold_materials NUMERIC(12,2) NOT NULL,         -- 100 для hall/hour, 1000 для cabinet/day
-                                          price_with_materials NUMERIC(12,2) NOT NULL,        -- «наши материалы»
-                                          price_own_materials NUMERIC(12,2) NOT NULL,         -- «со своими материалами»
-                                          active_from DATE NOT NULL DEFAULT CURRENT_DATE,
-                                          active_to   DATE
+                                          id          BIGSERIAL PRIMARY KEY,
+                                          place       TEXT        NOT NULL CHECK (place IN ('hall','cabinet')),
+                                          unit        TEXT        NOT NULL CHECK (unit  IN ('hour','day')),
+                                          with_sub    BOOLEAN     NOT NULL DEFAULT FALSE,          -- было with_subscription
+                                          min_qty     INT         NOT NULL,                        -- нижняя граница (включительно)
+                                          max_qty     INT,                                         -- верхняя граница (NULL = без верхней)
+                                          threshold   NUMERIC(12,2) NOT NULL,                      -- порог материалов на 1 ед. (100 / 1000)
+                                          price_with  NUMERIC(12,2) NOT NULL,                      -- цена за 1 ед., если порог выполнен
+                                          price_own   NUMERIC(12,2) NOT NULL,                      -- цена за 1 ед., если порог не выполнен
+                                          active      BOOLEAN     NOT NULL DEFAULT TRUE,
+                                          created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                                          updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                                          CONSTRAINT rent_rates_qty_chk CHECK (min_qty > 0 AND (max_qty IS NULL OR max_qty >= min_qty))
 );
+
+-- Индекс под подбор тарифа
+CREATE INDEX IF NOT EXISTS idx_rent_rates_key
+    ON rent_rates(place, unit, with_sub, active, min_qty);
+
+-- Стартовые ставки (базовые, без ступеней; ступени добавим админкой)
+INSERT INTO rent_rates(place, unit, with_sub, min_qty, max_qty, threshold, price_with, price_own)
+VALUES
+-- Зал / час, без абонемента
+('hall','hour', FALSE, 1, NULL, 100, 500, 650),
+-- Зал / час, с абонементом
+('hall','hour', TRUE,  1, NULL, 100, 450, 590),
+-- Кабинет / день, без абонемента
+('cabinet','day', FALSE, 1, NULL, 1000, 5500, 6500),
+-- Кабинет / день, с абонементом
+('cabinet','day', TRUE,  1, NULL, 1000, 5000, 6250)
+ON CONFLICT DO NOTHING;
+
 
 -- Сессия расхода/аренды
 CREATE TABLE IF NOT EXISTS consumption_sessions (
@@ -125,25 +148,6 @@ CREATE TABLE IF NOT EXISTS invoices (
                                         status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','paid','canceled')),
                                         payment_link TEXT NOT NULL DEFAULT '',
                                         created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
--- ===== СИДЫ (без абонемента) =====
--- Общий зал (почасово)
-INSERT INTO rent_rates (place, with_subscription, unit, threshold_materials, price_with_materials, price_own_materials, active_from)
-SELECT 'hall', FALSE, 'hour', 100, 490, 640, CURRENT_DATE
-WHERE NOT EXISTS (
-    SELECT 1 FROM rent_rates
-    WHERE place='hall' AND with_subscription=FALSE AND unit='hour'
-      AND (active_to IS NULL OR active_to>=CURRENT_DATE)
-);
-
--- Кабинет (посуточно)
-INSERT INTO rent_rates (place, with_subscription, unit, threshold_materials, price_with_materials, price_own_materials, active_from)
-SELECT 'cabinet', FALSE, 'day', 1000, 5500, 6500, CURRENT_DATE
-WHERE NOT EXISTS (
-    SELECT 1 FROM rent_rates
-    WHERE place='cabinet' AND with_subscription=FALSE AND unit='day'
-      AND (active_to IS NULL OR active_to>=CURRENT_DATE)
 );
 
 CREATE TABLE IF NOT EXISTS subscriptions (

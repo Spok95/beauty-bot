@@ -25,3 +25,17 @@ type Item struct {
 	UnitPrice  float64
 	Cost       float64
 }
+
+// Ступенчатая ставка
+type TierRate struct {
+	ID        int64
+	Place     string
+	Unit      string
+	WithSub   bool
+	MinQty    int
+	MaxQty    *int // nil = без верхней границы
+	Threshold float64
+	PriceWith float64
+	PriceOwn  float64
+	Active    bool
+}
