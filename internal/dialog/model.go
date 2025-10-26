@@ -55,6 +55,13 @@ const (
 	StateConsMatQty  State = "cons_mat_qty" // int (г/шт)
 	StateConsCart    State = "cons_cart"    // корзина материалов
 	StateConsSummary State = "cons_summary" // сводка и итог
+
+	// Абонементы (админ)
+	StateAdmSubsMenu          State = "adm_subs_menu"
+	StateAdmSubsPickUser      State = "adm_subs_pick_user"
+	StateAdmSubsPickPlaceUnit State = "adm_subs_pick_place_unit"
+	StateAdmSubsEnterQty      State = "adm_subs_enter_qty"
+	StateAdmSubsConfirm       State = "adm_subs_confirm"
 )
 
 type Payload map[string]any

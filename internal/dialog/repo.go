@@ -42,7 +42,7 @@ func (r *Repo) Reset(ctx context.Context, chatID int64) error {
 	return err
 }
 
-// Helper для безопасного чтения строк из payload
+// GetString Helper для безопасного чтения строк из payload
 func GetString(p Payload, key string) (string, bool) {
 	v, ok := p[key]
 	if !ok {
