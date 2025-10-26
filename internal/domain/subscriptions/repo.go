@@ -2,7 +2,6 @@ package subscriptions
 
 import (
 	"context"
-	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -10,8 +9,6 @@ import (
 type Repo struct{ db *pgxpool.Pool }
 
 func NewRepo(db *pgxpool.Pool) *Repo { return &Repo{db: db} }
-
-func yyyymm(t time.Time) string { return t.Format("2006-01") }
 
 func (r *Repo) GetActive(ctx context.Context, userID int64, place, unit, month string) (*Subscription, error) {
 	const q = `SELECT id,user_id,place,unit,month,total_qty,used_qty,created_at,updated_at
