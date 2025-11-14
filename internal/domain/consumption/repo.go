@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -118,4 +120,78 @@ RETURNING id`
 	}
 	err := r.pool.QueryRow(ctx, q, place, unit, withSub, minQty, maxAny, threshold, priceWith, priceOwn).Scan(&id)
 	return id, err
+}
+
+func (r *Repo) pickTier(ctx context.Context, place, unit string, withSub bool, qty int) (*RentRate, error) {
+	const q = `
+SELECT id, place, unit, with_subscription, min_qty, max_qty, per_unit,
+       threshold_materials, price_with_materials, price_own_materials,
+       active_from, active_to
+FROM rent_rates
+WHERE place=$1 AND unit=$2 AND with_subscription=$3
+  AND (active_to IS NULL OR active_to >= CURRENT_DATE)
+  AND min_qty <= $4
+  AND (max_qty IS NULL OR $4 <= max_qty)
+ORDER BY min_qty DESC
+LIMIT 1`
+	var rr RentRate
+	var maxQty *int
+	var activeTo *time.Time
+	err := r.pool.QueryRow(ctx, q, place, unit, withSub, qty).Scan(
+		&rr.ID, &rr.Place, &rr.Unit, &rr.WithSub, &rr.MinQty, &maxQty, &rr.PerUnit,
+		&rr.Threshold, &rr.PriceWith, &rr.PriceOwn, &rr.ActiveFrom, &activeTo,
+	)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	rr.MaxQty = maxQty
+	rr.ActiveTo = activeTo
+	return &rr, nil
+}
+
+// ComputeRent применяет правила:
+//   - округление до десятков — только для проверки порога
+//   - per_unit=true → rent = qty * price; need = rr.Threshold * qty
+//   - per_unit=false → rent = price;     need = rr.Threshold (фикс)
+func (r *Repo) ComputeRent(ctx context.Context, place, unit string, withSub bool, sessionQty int, matsSum float64, subLimitForPricing int) (rent float64, tariff string, rounded float64, need float64, rate *RentRate, err error) {
+	// qtyForTier: по абонементу выбираем ступень по лимиту абонемента, без абонемента — по количеству в сессии
+	qtyForTier := sessionQty
+	if withSub {
+		qtyForTier = subLimitForPricing
+	}
+	rate, err = r.pickTier(ctx, place, unit, withSub, qtyForTier)
+	if err != nil || rate == nil {
+		return 0, "", 0, 0, nil, fmt.Errorf("нет активного тарифа для place=%s unit=%s withSub=%v qty=%d", place, unit, withSub, qtyForTier)
+	}
+
+	rounded = roundTo10(matsSum)
+	if rate.PerUnit {
+		need = rate.Threshold * float64(sessionQty)
+	} else {
+		need = rate.Threshold
+	}
+
+	var price float64
+	if rounded >= need {
+		price = rate.PriceWith
+		tariff = "по ставке с материалами"
+	} else {
+		price = rate.PriceOwn
+		tariff = "по ставке со своими материалами"
+	}
+
+	if rate.PerUnit {
+		rent = float64(sessionQty) * price
+	} else {
+		rent = price
+	}
+	return rent, tariff, rounded, need, rate, nil
+}
+
+func roundTo10(x float64) float64 {
+	// до ближайшего десятка
+	return float64(int((x+5)/10) * 10)
 }
