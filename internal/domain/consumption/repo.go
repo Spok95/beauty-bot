@@ -49,20 +49,43 @@ func (r *Repo) CreateInvoice(ctx context.Context, userID, sessionID int64, amoun
 	return id, row.Scan(&id)
 }
 
-// GetTier подбирает ставку по qty (ступени) с учётом withSub
+// GetTier подбирает ступень по qty (для админки, старый интерфейс).
+// Работает с новой схемой rent_rates (with_subscription, threshold_materials и т.п.).
 func (r *Repo) GetTier(ctx context.Context, place, unit string, withSub bool, qty int) (TierRate, bool, error) {
 	const q = `
-SELECT id, place, unit, with_sub, min_qty, max_qty, threshold, price_with, price_own, active
+SELECT id,
+       place,
+       unit,
+       with_subscription,
+       min_qty,
+       max_qty,
+       threshold_materials,
+       price_with_materials,
+       price_own_materials,
+       (active_to IS NULL OR active_to >= CURRENT_DATE) AS active
 FROM rent_rates
-WHERE place=$1 AND unit=$2 AND with_sub=$3 AND active = TRUE
+WHERE place=$1
+  AND unit=$2
+  AND with_subscription=$3
   AND min_qty <= $4
   AND (max_qty IS NULL OR max_qty >= $4)
 ORDER BY min_qty DESC
 LIMIT 1`
 	var tr TierRate
 	var maxSQL sql.NullInt32
-	err := r.pool.QueryRow(ctx, q, place, unit, withSub, qty).
-		Scan(&tr.ID, &tr.Place, &tr.Unit, &tr.WithSub, &tr.MinQty, &maxSQL, &tr.Threshold, &tr.PriceWith, &tr.PriceOwn, &tr.Active)
+
+	err := r.pool.QueryRow(ctx, q, place, unit, withSub, qty).Scan(
+		&tr.ID,
+		&tr.Place,
+		&tr.Unit,
+		&tr.WithSub,
+		&tr.MinQty,
+		&maxSQL,
+		&tr.Threshold,
+		&tr.PriceWith,
+		&tr.PriceOwn,
+		&tr.Active,
+	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return TierRate{}, false, nil
@@ -76,12 +99,23 @@ LIMIT 1`
 	return tr, true, nil
 }
 
-// ListRates List ступеней для place/unit/withSub
+// ListRates — список ступеней для place/unit/withSub (для экрана "Установка тарифов").
 func (r *Repo) ListRates(ctx context.Context, place, unit string, withSub bool) ([]TierRate, error) {
 	const q = `
-SELECT id, place, unit, with_sub, min_qty, max_qty, threshold, price_with, price_own, active
+SELECT id,
+       place,
+       unit,
+       with_subscription,
+       min_qty,
+       max_qty,
+       threshold_materials,
+       price_with_materials,
+       price_own_materials,
+       (active_to IS NULL OR active_to >= CURRENT_DATE) AS active
 FROM rent_rates
-WHERE place=$1 AND unit=$2 AND with_sub=$3
+WHERE place=$1
+  AND unit=$2
+  AND with_subscription=$3
 ORDER BY active DESC, min_qty ASC`
 	rows, err := r.pool.Query(ctx, q, place, unit, withSub)
 	if err != nil {
@@ -93,7 +127,18 @@ ORDER BY active DESC, min_qty ASC`
 	for rows.Next() {
 		var tr TierRate
 		var maxSQL sql.NullInt32
-		if err := rows.Scan(&tr.ID, &tr.Place, &tr.Unit, &tr.WithSub, &tr.MinQty, &maxSQL, &tr.Threshold, &tr.PriceWith, &tr.PriceOwn, &tr.Active); err != nil {
+		if err := rows.Scan(
+			&tr.ID,
+			&tr.Place,
+			&tr.Unit,
+			&tr.WithSub,
+			&tr.MinQty,
+			&maxSQL,
+			&tr.Threshold,
+			&tr.PriceWith,
+			&tr.PriceOwn,
+			&tr.Active,
+		); err != nil {
 			return nil, err
 		}
 		if maxSQL.Valid {
@@ -105,11 +150,23 @@ ORDER BY active DESC, min_qty ASC`
 	return out, nil
 }
 
-// CreateRate — создать новую ступень
+// CreateRate — создать новую ступень тарифа (для экрана "Установка тарифов").
+// per_unit для таких ступеней считаем всегда TRUE (порог "на единицу").
 func (r *Repo) CreateRate(ctx context.Context, place, unit string, withSub bool, minQty int, maxQty *int, threshold, priceWith, priceOwn float64) (int64, error) {
 	const q = `
-INSERT INTO rent_rates(place, unit, with_sub, min_qty, max_qty, threshold, price_with, price_own, active)
-VALUES($1,$2,$3,$4,$5,$6,$7,$8, TRUE)
+INSERT INTO rent_rates(
+    place,
+    unit,
+    with_subscription,
+    min_qty,
+    max_qty,
+    per_unit,
+    threshold_materials,
+    price_with_materials,
+    price_own_materials,
+    active_from,
+    active_to
+) VALUES ($1,$2,$3,$4,$5,TRUE,$6,$7,$8,CURRENT_DATE,NULL)
 RETURNING id`
 	var id int64
 	var maxAny any
@@ -118,7 +175,16 @@ RETURNING id`
 	} else {
 		maxAny = *maxQty
 	}
-	err := r.pool.QueryRow(ctx, q, place, unit, withSub, minQty, maxAny, threshold, priceWith, priceOwn).Scan(&id)
+	err := r.pool.QueryRow(ctx, q,
+		place,
+		unit,
+		withSub,
+		minQty,
+		maxAny,
+		threshold,
+		priceWith,
+		priceOwn,
+	).Scan(&id)
 	return id, err
 }
 
