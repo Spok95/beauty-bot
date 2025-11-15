@@ -33,19 +33,21 @@ type Bot struct {
 	inventory *inventory.Repo
 	cons      *consumption.Repo
 	subs      *subs.Repo
+	rates     *consumption.RateRepo
 }
 
 func New(api *tgbotapi.BotAPI, log *slog.Logger,
 	usersRepo *users.Repo, statesRepo *dialog.Repo,
 	adminChatID int64, catalogRepo *catalog.Repo,
 	materialsRepo *materials.Repo, inventoryRepo *inventory.Repo,
-	consRepo *consumption.Repo, subsRepo *subs.Repo) *Bot {
+	consRepo *consumption.Repo, subsRepo *subs.Repo,
+	rateRepo *consumption.RateRepo) *Bot {
 
 	return &Bot{
 		api: api, log: log, users: usersRepo, states: statesRepo,
 		adminChat: adminChatID, catalog: catalogRepo,
 		materials: materialsRepo, inventory: inventoryRepo,
-		cons: consRepo, subs: subsRepo,
+		cons: consRepo, subs: subsRepo, rates: rateRepo,
 	}
 }
 
@@ -143,23 +145,6 @@ func confirmKeyboard() tgbotapi.InlineKeyboardMarkup {
 	)
 }
 
-func (b *Bot) consPlaceKeyboard(withSub bool) tgbotapi.InlineKeyboardMarkup {
-	toggle := "Абонемент: выкл"
-	if withSub {
-		toggle = "Абонемент: вкл"
-	}
-	return tgbotapi.NewInlineKeyboardMarkup(
-		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("Общий зал", "cons:place:hall"),
-			tgbotapi.NewInlineKeyboardButtonData("Кабинет", "cons:place:cabinet"),
-		),
-		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData(toggle, "cons:sub:tg"),
-		),
-		navKeyboard(false, true).InlineKeyboard[0],
-	)
-}
-
 // adminReplyKeyboard Нижняя панель (ReplyKeyboard) для админа
 func adminReplyKeyboard() tgbotapi.ReplyKeyboardMarkup {
 	return tgbotapi.ReplyKeyboardMarkup{
@@ -169,6 +154,7 @@ func adminReplyKeyboard() tgbotapi.ReplyKeyboardMarkup {
 			{tgbotapi.NewKeyboardButton("Материалы")},
 			{tgbotapi.NewKeyboardButton("Остатки"), tgbotapi.NewKeyboardButton("Поставки")},
 			{tgbotapi.NewKeyboardButton("Абонементы")},
+			{tgbotapi.NewKeyboardButton("Установка тарифов")},
 			{tgbotapi.NewKeyboardButton("Список команд")},
 		},
 	}
@@ -180,6 +166,7 @@ func masterReplyKeyboard() tgbotapi.ReplyKeyboardMarkup {
 		Keyboard: [][]tgbotapi.KeyboardButton{
 			{tgbotapi.NewKeyboardButton("Расход/Аренда")},
 			{tgbotapi.NewKeyboardButton("Мои абонементы")},
+			{tgbotapi.NewKeyboardButton("Купить абонемент")},
 			{tgbotapi.NewKeyboardButton("Список команд")},
 		},
 	}
@@ -757,11 +744,6 @@ func (b *Bot) showSubsPickPlaceUnit(chatID int64, editMsgID int, uid int64) {
 	b.send(tgbotapi.NewEditMessageTextAndMarkup(chatID, editMsgID, "Выберите помещение:", kb))
 }
 
-func roundTo10(x float64) float64 {
-	// до ближайшего десятка
-	return float64(int((x+5)/10) * 10)
-}
-
 // clearPrevStep убрать inline-кнопки у прошлого шага, если он был
 func (b *Bot) clearPrevStep(ctx context.Context, chatID int64) {
 	st, _ := b.states.Get(ctx, chatID)
@@ -783,6 +765,16 @@ func (b *Bot) saveLastStep(ctx context.Context, chatID int64, nextState dialog.S
 	}
 	payload["last_mid"] = float64(newMID)
 	_ = b.states.Set(ctx, chatID, nextState, payload)
+}
+
+func (b *Bot) subBuyPlaceKeyboard() tgbotapi.InlineKeyboardMarkup {
+	return tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("Общий зал (часы)", "subbuy:place:hall"),
+			tgbotapi.NewInlineKeyboardButtonData("Кабинет (дни)", "subbuy:place:cabinet"),
+		),
+		navKeyboard(false, true).InlineKeyboard[0],
+	)
 }
 
 // maybeNotifyLowOrNegative Информирование при минусовом/низком остатке (только для материалов в граммах)
@@ -1023,8 +1015,14 @@ func (b *Bot) onMessage(ctx context.Context, upd tgbotapi.Update) {
 				b.send(tgbotapi.NewMessage(chatID, "Доступ запрещён."))
 				return
 			}
-			_ = b.states.Set(ctx, chatID, dialog.StateConsPlace, dialog.Payload{"with_sub": false})
-			kb := b.consPlaceKeyboard(false)
+			_ = b.states.Set(ctx, chatID, dialog.StateConsPlace, dialog.Payload{})
+			kb := tgbotapi.NewInlineKeyboardMarkup(
+				tgbotapi.NewInlineKeyboardRow(
+					tgbotapi.NewInlineKeyboardButtonData("Общий зал", "cons:place:hall"),
+					tgbotapi.NewInlineKeyboardButtonData("Кабинет", "cons:place:cabinet"),
+				),
+				navKeyboard(false, true).InlineKeyboard[0],
+			)
 			m := tgbotapi.NewMessage(chatID, "Выберите помещение:")
 			m.ReplyMarkup = kb
 			b.send(m)
@@ -1042,8 +1040,14 @@ func (b *Bot) onMessage(ctx context.Context, upd tgbotapi.Update) {
 		if u == nil || u.Status != users.StatusApproved || u.Role != users.RoleMaster {
 			return
 		}
-		_ = b.states.Set(ctx, chatID, dialog.StateConsPlace, dialog.Payload{"with_sub": false})
-		kb := b.consPlaceKeyboard(false)
+		_ = b.states.Set(ctx, chatID, dialog.StateConsPlace, dialog.Payload{})
+		kb := tgbotapi.NewInlineKeyboardMarkup(
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("Общий зал", "cons:place:hall"),
+				tgbotapi.NewInlineKeyboardButtonData("Кабинет", "cons:place:cabinet"),
+			),
+			navKeyboard(false, true).InlineKeyboard[0],
+		)
 		m := tgbotapi.NewMessage(chatID, "Выберите помещение:")
 		m.ReplyMarkup = kb
 		b.send(m)
@@ -1074,6 +1078,18 @@ func (b *Bot) onMessage(ctx context.Context, upd tgbotapi.Update) {
 				placeRU[s.Place], unitRU[s.Unit], s.UsedQty, s.TotalQty, left))
 		}
 		b.send(tgbotapi.NewMessage(chatID, sb.String()))
+		return
+	}
+
+	if msg.Text == "Купить абонемент" {
+		u, _ := b.users.GetByTelegramID(ctx, tgID)
+		if u == nil || u.Status != users.StatusApproved || u.Role != users.RoleMaster {
+			return
+		}
+		_ = b.states.Set(ctx, chatID, dialog.StateSubBuyPlace, dialog.Payload{})
+		m := tgbotapi.NewMessage(chatID, "Выберите тип абонемента:")
+		m.ReplyMarkup = b.subBuyPlaceKeyboard()
+		b.send(m)
 		return
 	}
 
@@ -1128,6 +1144,33 @@ func (b *Bot) onMessage(ctx context.Context, upd tgbotapi.Update) {
 		return
 	}
 
+	if msg.Text == "Установка тарифов" {
+		u, _ := b.users.GetByTelegramID(ctx, tgID)
+		if u == nil || u.Role != users.RoleAdmin || u.Status != users.StatusApproved {
+			return
+		}
+		_ = b.states.Set(ctx, chatID, dialog.StateAdmRatesPickPU, dialog.Payload{
+			"place": "hall", "unit": "hour", "with_sub": false,
+		})
+		kb := tgbotapi.NewInlineKeyboardMarkup(
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("Общий зал / час", "rates:pu:hall:hour"),
+				tgbotapi.NewInlineKeyboardButtonData("Кабинет / день", "rates:pu:cabinet:day"),
+			),
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("Абонемент: выкл", "rates:sub:tg"),
+			),
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("📄 Показать ступени", "rates:list"),
+			),
+			navKeyboard(false, true).InlineKeyboard[0],
+		)
+		m := tgbotapi.NewMessage(chatID, "Установка тарифов — выберите набор параметров:")
+		m.ReplyMarkup = kb
+		b.send(m)
+		return
+	}
+
 	// Триггеры расхода/аренды по тексту (доступно всем подтверждённым ролям)
 	if msg.Text == "/rent" || msg.Text == "/consumption" {
 		u, _ := b.users.GetByTelegramID(ctx, tgID)
@@ -1135,10 +1178,14 @@ func (b *Bot) onMessage(ctx context.Context, upd tgbotapi.Update) {
 			b.send(tgbotapi.NewMessage(chatID, "Доступ запрещён."))
 			return
 		}
-		_ = b.states.Set(ctx, chatID, dialog.StateConsPlace, dialog.Payload{
-			"with_sub": false,
-		})
-		kb := b.consPlaceKeyboard(false)
+		_ = b.states.Set(ctx, chatID, dialog.StateConsPlace, dialog.Payload{})
+		kb := tgbotapi.NewInlineKeyboardMarkup(
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("Общий зал", "cons:place:hall"),
+				tgbotapi.NewInlineKeyboardButtonData("Кабинет", "cons:place:cabinet"),
+			),
+			navKeyboard(false, true).InlineKeyboard[0],
+		)
 		m := tgbotapi.NewMessage(chatID, "Выберите помещение:")
 		m.ReplyMarkup = kb
 		b.send(m)
@@ -1484,6 +1531,136 @@ func (b *Bot) onMessage(ctx context.Context, upd tgbotapi.Update) {
 		m.ReplyMarkup = kb
 		b.send(m)
 		return
+
+	case dialog.StateAdmRatesCreateMin:
+		s := strings.TrimSpace(msg.Text)
+		n, err := strconv.ParseInt(s, 10, 64)
+		if err != nil || n <= 0 {
+			b.send(tgbotapi.NewMessage(chatID, "Введите целое положительное число"))
+			return
+		}
+		st.Payload["min"] = float64(n)
+		_ = b.states.Set(ctx, chatID, dialog.StateAdmRatesCreateMax, st.Payload)
+		b.send(tgbotapi.NewMessage(chatID, "Введите максимальное значение диапазона или «-» для бесконечности"))
+		return
+
+	case dialog.StateAdmRatesCreateMax:
+		s := strings.TrimSpace(msg.Text)
+		if s == "-" {
+			st.Payload["max"] = nil
+		} else {
+			n, err := strconv.ParseInt(s, 10, 64)
+			if err != nil || n <= 0 {
+				b.send(tgbotapi.NewMessage(chatID, "Введите целое положительное число или «-»"))
+				return
+			}
+			st.Payload["max"] = float64(n)
+		}
+		_ = b.states.Set(ctx, chatID, dialog.StateAdmRatesCreateThreshold, st.Payload)
+		b.send(tgbotapi.NewMessage(chatID, "Введите порог материалов на единицу (например 100 или 1000)"))
+		return
+
+	case dialog.StateAdmRatesCreateThreshold:
+		s := strings.TrimSpace(msg.Text)
+		x, err := strconv.ParseFloat(strings.ReplaceAll(s, ",", "."), 64)
+		if err != nil || x < 0 {
+			b.send(tgbotapi.NewMessage(chatID, "Введите число (>= 0)"))
+			return
+		}
+		st.Payload["thr"] = x
+		_ = b.states.Set(ctx, chatID, dialog.StateAdmRatesCreatePriceWith, st.Payload)
+		b.send(tgbotapi.NewMessage(chatID, "Цена за ед., если порог выполнен (руб)"))
+		return
+
+	case dialog.StateAdmRatesCreatePriceWith:
+		s := strings.TrimSpace(msg.Text)
+		x, err := strconv.ParseFloat(strings.ReplaceAll(s, ",", "."), 64)
+		if err != nil || x < 0 {
+			b.send(tgbotapi.NewMessage(chatID, "Введите число (>= 0)"))
+			return
+		}
+		st.Payload["pwith"] = x
+		_ = b.states.Set(ctx, chatID, dialog.StateAdmRatesCreatePriceOwn, st.Payload)
+		b.send(tgbotapi.NewMessage(chatID, "Цена за ед., если порог НЕ выполнен (руб)"))
+		return
+
+	case dialog.StateAdmRatesCreatePriceOwn:
+		s := strings.TrimSpace(msg.Text)
+		x, err := strconv.ParseFloat(strings.ReplaceAll(s, ",", "."), 64)
+		if err != nil || x < 0 {
+			b.send(tgbotapi.NewMessage(chatID, "Введите число (>= 0)"))
+			return
+		}
+		st.Payload["pown"] = x
+		_ = b.states.Set(ctx, chatID, dialog.StateAdmRatesConfirm, st.Payload)
+
+		place := st.Payload["place"].(string)
+		unit := st.Payload["unit"].(string)
+		withSub := false
+		if v, ok := st.Payload["with_sub"].(bool); ok {
+			withSub = v
+		}
+
+		minQty := int(st.Payload["min"].(float64))
+		var maxTxt string
+		if st.Payload["max"] == nil {
+			maxTxt = "∞"
+		} else {
+			maxTxt = fmt.Sprintf("%d", int(st.Payload["max"].(float64)))
+		}
+		thr := st.Payload["thr"].(float64)
+		pwith := st.Payload["pwith"].(float64)
+		pown := st.Payload["pown"].(float64)
+
+		preview := fmt.Sprintf(
+			"Ступень:\n— %s / %s (%s)\n— Диапазон: %d–%s\n— Порог: %.0f\n— Цена с материалами: %.2f\n— Цена со своими: %.2f\n\nСохранить?",
+			map[string]string{"hall": "Зал", "cabinet": "Кабинет"}[place],
+			map[string]string{"hour": "час", "day": "день"}[unit],
+			map[bool]string{true: "с абонементом", false: "без абонемента"}[withSub],
+			minQty, maxTxt, thr, pwith, pown,
+		)
+
+		kb := tgbotapi.NewInlineKeyboardMarkup(
+			tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("💾 Сохранить", "rates:save")),
+			navKeyboard(true, true).InlineKeyboard[0],
+		)
+		m := tgbotapi.NewMessage(chatID, preview)
+		m.ReplyMarkup = kb
+		b.send(m)
+		return
+
+	case dialog.StateSubBuyQty:
+		s := strings.TrimSpace(msg.Text)
+		s = strings.ReplaceAll(s, ",", ".")
+		if strings.Contains(s, ".") {
+			b.send(tgbotapi.NewMessage(chatID, "Введите целое число (без дробной части)."))
+			return
+		}
+		n, err := strconv.ParseInt(s, 10, 64)
+		if err != nil || n <= 0 {
+			b.send(tgbotapi.NewMessage(chatID, "Некорректное значение. Введите целое положительное число."))
+			return
+		}
+		st.Payload["qty"] = float64(n)
+		_ = b.states.Set(ctx, chatID, dialog.StateSubBuyConfirm, st.Payload)
+
+		place := st.Payload["place"].(string)
+		unit := st.Payload["unit"].(string)
+		month := time.Now().Format("2006-01")
+		txt := fmt.Sprintf("Подтвердите покупку абонемента:\nМесяц: %s\nМесто: %s\nЕдиница: %s\nОбъём: %d",
+			month,
+			map[string]string{"hall": "Зал", "cabinet": "Кабинет"}[place],
+			map[string]string{"hour": "часы", "day": "дни"}[unit],
+			n,
+		)
+		kb := tgbotapi.NewInlineKeyboardMarkup(
+			tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("✅ Подтвердить", "subbuy:confirm")),
+			navKeyboard(true, true).InlineKeyboard[0],
+		)
+		m := tgbotapi.NewMessage(chatID, txt)
+		m.ReplyMarkup = kb
+		b.send(m)
+		return
 	}
 }
 
@@ -1710,6 +1887,15 @@ func (b *Bot) onCallback(ctx context.Context, upd tgbotapi.Update) {
 			// назад к вводу количества
 			b.editTextWithNav(fromChat, cb.Message.MessageID, "Введите объём на месяц (целое число):")
 			_ = b.states.Set(ctx, fromChat, dialog.StateAdmSubsEnterQty, st.Payload)
+
+		case dialog.StateSubBuyQty:
+			_ = b.states.Set(ctx, fromChat, dialog.StateSubBuyPlace, st.Payload)
+			b.send(tgbotapi.NewEditMessageTextAndMarkup(fromChat, cb.Message.MessageID,
+				"Выберите тип абонемента:", b.subBuyPlaceKeyboard()))
+		case dialog.StateSubBuyConfirm:
+			_ = b.states.Set(ctx, fromChat, dialog.StateSubBuyQty, st.Payload)
+			b.editTextWithNav(fromChat, cb.Message.MessageID,
+				fmt.Sprintf("Введите объём (%s):", map[string]string{"hour": "часы", "day": "дни"}[st.Payload["unit"].(string)]))
 
 		default:
 			b.editTextAndClear(fromChat, cb.Message.MessageID, "Действие неактуально.")
@@ -2232,19 +2418,6 @@ func (b *Bot) onCallback(ctx context.Context, upd tgbotapi.Update) {
 		_ = b.answerCallback(cb, "Готово", false)
 		return
 
-	case data == "cons:sub:tg":
-		st, _ := b.states.Get(ctx, fromChat)
-		cur := false
-		if v, ok := st.Payload["with_sub"].(bool); ok {
-			cur = v
-		}
-		st.Payload["with_sub"] = !cur
-		_ = b.states.Set(ctx, fromChat, dialog.StateConsPlace, st.Payload)
-		kb := b.consPlaceKeyboard(!cur)
-		b.send(tgbotapi.NewEditMessageTextAndMarkup(fromChat, cb.Message.MessageID, "Выберите помещение:", kb))
-		_ = b.answerCallback(cb, "Ок", false)
-		return
-
 		// Выбор помещения
 	case strings.HasPrefix(data, "cons:place:"):
 		place := strings.TrimPrefix(data, "cons:place:")
@@ -2294,13 +2467,13 @@ func (b *Bot) onCallback(ctx context.Context, upd tgbotapi.Update) {
 
 	case data == "cons:calc":
 		st, _ := b.states.Get(ctx, fromChat)
-		// посчитаем и покажем сводку
+
 		place := st.Payload["place"].(string)
 		unit := st.Payload["unit"].(string)
 		qty := int(st.Payload["qty"].(float64))
 		items := b.consParseItems(st.Payload["items"])
 
-		// сумма материалов
+		// 1) стоимость материалов
 		var mats float64
 		for _, it := range items {
 			matID := int64(it["mat_id"].(float64))
@@ -2308,57 +2481,81 @@ func (b *Bot) onCallback(ctx context.Context, upd tgbotapi.Update) {
 			price, _ := b.materials.GetPrice(ctx, matID)
 			mats += float64(q) * price
 		}
-		rounded := roundTo10(mats)
 
-		// тарифы: пытаемся взять из rent_rates, иначе дефолт
+		// 2) авто-детект абонемента
 		withSub := false
-		if v, ok := st.Payload["with_sub"].(bool); ok {
-			withSub = v
+		var subLeft *int // для показа остатка
+		subLimitForPricing := qty
+
+		if u, _ := b.users.GetByTelegramID(ctx, cb.From.ID); u != nil {
+			month := time.Now().Format("2006-01")
+			if s, err := b.subs.GetActive(ctx, u.ID, place, unit, month); err == nil && s != nil {
+				left := s.TotalQty - s.UsedQty
+				if left >= qty {
+					withSub = true
+					subLeft = &left
+					subLimitForPricing = s.TotalQty // для подбора ступени по общему объёму тарифа
+				} else if left > 0 && left < qty {
+					// Остатка не хватает на эту сессию → считаем БЕЗ абонемента, но покажем остаток в сводке.
+					subLeft = &left
+					withSub = false
+					subLimitForPricing = qty
+				}
+			}
 		}
 
-		rt, ok, _ := b.cons.GetRate(ctx, place, unit, withSub)
-		if !ok {
-			b.send(tgbotapi.NewMessage(fromChat, "Тарифы не настроены. Сообщение отправлено администратору."))
-			note := fmt.Sprintf("⚠️ Нет активных тарифов для: %s / %s (%s). Настройте тарифы.",
-				map[string]string{"hall": "Зал", "cabinet": "Кабинет"}[place],
-				map[string]string{"hour": "час", "day": "день"}[unit],
-				map[bool]string{true: "с абонементом", false: "без абонемента"}[withSub],
-			)
-			if b.adminChat != 0 {
-				b.send(tgbotapi.NewMessage(b.adminChat, note))
-			}
+		// 3) расчёт по ступеням через доменный метод
+		rent, tariff, rounded, need, _, err := b.cons.ComputeRent(ctx, place, unit, withSub, qty, mats, subLimitForPricing)
+		if err != nil {
+			b.send(tgbotapi.NewMessage(fromChat,
+				fmt.Sprintf("⚠️ Нет активных тарифов для: %s / %s (%s). Настройте тарифы.",
+					map[string]string{"hall": "Зал", "cabinet": "Кабинет"}[place],
+					map[string]string{"hour": "час", "day": "день"}[unit],
+					map[bool]string{true: "с абонементом", false: "без абонемента"}[withSub],
+				)))
 			return
 		}
-		need := float64(qty) * rt.Threshold
-		var rent float64
-		var tariff string
-		if roundTo10(mats) >= need {
-			rent = float64(qty) * rt.PriceWith
-			tariff = "по ставке с материалами"
-		} else {
-			rent = float64(qty) * rt.PriceOwn
-			tariff = "по ставке со своими материалами"
-		}
-
 		total := rent + mats
 
-		// сохраним расчёт в payload
+		// 4) сохраняем в payload
+		st.Payload["with_sub"] = withSub
 		st.Payload["mats_sum"] = mats
 		st.Payload["mats_rounded"] = rounded
+		st.Payload["need"] = need
 		st.Payload["rent"] = rent
 		st.Payload["total"] = total
+		if subLeft != nil {
+			st.Payload["sub_left"] = float64(*subLeft)
+		} else {
+			delete(st.Payload, "sub_left")
+		}
 		_ = b.states.Set(ctx, fromChat, dialog.StateConsSummary, st.Payload)
 
-		// вывод
+		// 5) вывод сводки (покажем остаток, если есть)
 		subBadge := ""
 		if withSub {
 			subBadge = " (с абонементом)"
 		}
+		subLine := ""
+		if v, ok := st.Payload["sub_left"].(float64); ok {
+			left := int(v)
+			if withSub {
+				subLine = fmt.Sprintf("\nОстаток абонемента: %d %s", left, map[string]string{"hour": "часов", "day": "дней"}[unit])
+			} else if left > 0 {
+				subLine = fmt.Sprintf("\nАбонемент: остаток %d %s (на эту сессию не хватает, расчёт без абонемента).",
+					left, map[string]string{"hour": "часов", "day": "дней"}[unit])
+			}
+		}
+
 		txt := fmt.Sprintf(
-			"Сводка затрат для оплаты"+subBadge+":\nПомещение: %s\nКол-во: %d %s\nМатериалы: %.2f ₽\nАренда: %.2f ₽ (%s)\nИтого к оплате: %.2f ₽",
-			map[string]string{"hall": "Зал", "cabinet": "Кабинет"}[place], qty, map[string]string{"hour": "ч", "day": "дн"}[unit],
-			mats, rent, tariff, total,
+			"Сводка затрат для оплаты%s:\nПомещение: %s\nКол-во: %d %s\nМатериалы: %.2f ₽ (для порога учтено %.0f ₽; порог %.0f ₽)\nАренда: %.2f ₽ (%s)\nИтого к оплате: %.2f ₽%s",
+			subBadge,
+			map[string]string{"hall": "Зал", "cabinet": "Кабинет"}[place],
+			qty, map[string]string{"hour": "ч", "day": "дн"}[unit],
+			mats, rounded, need,
+			rent, tariff, total, subLine,
 		)
+
 		kb := tgbotapi.NewInlineKeyboardMarkup(
 			tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("✅ Подтвердить", "cons:confirm")),
 			tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("✏️ Изменить", "cons:edit")),
@@ -2509,6 +2706,237 @@ func (b *Bot) onCallback(ctx context.Context, upd tgbotapi.Update) {
 		b.editTextAndClear(fromChat, cb.Message.MessageID, "Сессия подтверждена. Списание материалов и расчёт завершены.")
 		_ = b.states.Set(ctx, fromChat, dialog.StateIdle, dialog.Payload{})
 		_ = b.answerCallback(cb, "Готово", false)
+		return
+
+		// Покупка абонемента — выбор места
+	case strings.HasPrefix(data, "subbuy:place:"):
+		place := strings.TrimPrefix(data, "subbuy:place:")
+		unit := "hour"
+		if place == "cabinet" {
+			unit = "day"
+		}
+		_ = b.states.Set(ctx, fromChat, dialog.StateSubBuyQty, dialog.Payload{
+			"place": place, "unit": unit,
+		})
+		b.editTextWithNav(fromChat, cb.Message.MessageID,
+			fmt.Sprintf("Введите объём (%s):", map[string]string{"hour": "часы", "day": "дни"}[unit]))
+		_ = b.answerCallback(cb, "Ок", false)
+		return
+
+		// Покупка абонемента — подтверждение
+	case data == "subbuy:confirm":
+		st, _ := b.states.Get(ctx, fromChat)
+		u, _ := b.users.GetByTelegramID(ctx, cb.From.ID)
+		if u == nil || u.Status != users.StatusApproved || u.Role != users.RoleMaster {
+			b.editTextAndClear(fromChat, cb.Message.MessageID, "Доступ запрещён.")
+			_ = b.answerCallback(cb, "Ошибка", true)
+			return
+		}
+		place := st.Payload["place"].(string)
+		unit := st.Payload["unit"].(string)
+		qty := int(st.Payload["qty"].(float64))
+		month := time.Now().Format("2006-01")
+
+		if _, err := b.subs.AddOrCreateTotal(ctx, u.ID, place, unit, month, qty); err != nil {
+			b.editTextAndClear(fromChat, cb.Message.MessageID, "Не удалось оформить абонемент.")
+			_ = b.answerCallback(cb, "Ошибка", true)
+			return
+		}
+		b.editTextAndClear(fromChat, cb.Message.MessageID, "Абонемент оформлен/пополнен.")
+		_ = b.states.Set(ctx, fromChat, dialog.StateIdle, dialog.Payload{})
+		_ = b.answerCallback(cb, "Готово", false)
+		return
+
+	// Переключение place/unit
+	case strings.HasPrefix(data, "rates:pu:"):
+		parts := strings.Split(strings.TrimPrefix(data, "rates:pu:"), ":")
+		if len(parts) != 2 {
+			_ = b.answerCallback(cb, "Некорректные данные", true)
+			return
+		}
+		place, unit := parts[0], parts[1]
+		st, _ := b.states.Get(ctx, fromChat)
+		if st.Payload == nil {
+			st.Payload = dialog.Payload{}
+		}
+		st.Payload["place"] = place
+		st.Payload["unit"] = unit
+		_ = b.states.Set(ctx, fromChat, dialog.StateAdmRatesPickPU, st.Payload)
+
+		withSub := false
+		if v, ok := st.Payload["with_sub"].(bool); ok {
+			withSub = v
+		}
+		toggle := "Абонемент: выкл"
+		if withSub {
+			toggle = "Абонемент: вкл"
+		}
+
+		kb := tgbotapi.NewInlineKeyboardMarkup(
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("Общий зал / час", "rates:pu:hall:hour"),
+				tgbotapi.NewInlineKeyboardButtonData("Кабинет / день", "rates:pu:cabinet:day"),
+			),
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData(toggle, "rates:sub:tg"),
+			),
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("📄 Показать ступени", "rates:list"),
+			),
+			navKeyboard(true, true).InlineKeyboard[0],
+		)
+		b.send(tgbotapi.NewEditMessageTextAndMarkup(fromChat, cb.Message.MessageID, "Установка тарифов — выберите набор параметров:", kb))
+		_ = b.answerCallback(cb, "Ок", false)
+		return
+
+		// Тумблер абонемента
+	case data == "rates:sub:tg":
+		st, _ := b.states.Get(ctx, fromChat)
+		cur := false
+		if v, ok := st.Payload["with_sub"].(bool); ok {
+			cur = v
+		}
+		st.Payload["with_sub"] = !cur
+		_ = b.states.Set(ctx, fromChat, dialog.StateAdmRatesPickSub, st.Payload)
+
+		place := st.Payload["place"].(string)
+		unit := st.Payload["unit"].(string)
+		toggle := "Абонемент: выкл"
+		if !cur {
+			toggle = "Абонемент: вкл"
+		}
+
+		kb := tgbotapi.NewInlineKeyboardMarkup(
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("Общий зал / час", "rates:pu:hall:hour"),
+				tgbotapi.NewInlineKeyboardButtonData("Кабинет / день", "rates:pu:cabinet:day"),
+			),
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData(toggle, "rates:sub:tg"),
+			),
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("📄 Показать ступени", "rates:list"),
+			),
+			navKeyboard(true, true).InlineKeyboard[0],
+		)
+		b.send(tgbotapi.NewEditMessageTextAndMarkup(fromChat, cb.Message.MessageID,
+			fmt.Sprintf("Установка тарифов — %s / %s", map[string]string{"hall": "Зал", "cabinet": "Кабинет"}[place], map[string]string{"hour": "час", "day": "день"}[unit]), kb))
+		_ = b.answerCallback(cb, "Ок", false)
+		return
+
+		// Показ списка ступеней
+	case data == "rates:list":
+		st, _ := b.states.Get(ctx, fromChat)
+		place := st.Payload["place"].(string)
+		unit := st.Payload["unit"].(string)
+		withSub := false
+		if v, ok := st.Payload["with_sub"].(bool); ok {
+			withSub = v
+		}
+
+		rates, err := b.cons.ListRates(ctx, place, unit, withSub)
+		if err != nil {
+			b.editTextAndClear(fromChat, cb.Message.MessageID, "Ошибка загрузки тарифов")
+			_ = b.answerCallback(cb, "Ошибка", true)
+			return
+		}
+
+		lines := []string{
+			fmt.Sprintf("Тарифы: %s / %s (%s)",
+				map[string]string{"hall": "Зал", "cabinet": "Кабинет"}[place],
+				map[string]string{"hour": "час", "day": "день"}[unit],
+				map[bool]string{true: "с абонементом", false: "без абонемента"}[withSub],
+			),
+		}
+		for _, r := range rates {
+			maxTxt := "∞"
+			if r.MaxQty != nil {
+				maxTxt = fmt.Sprintf("%d", *r.MaxQty)
+			}
+			status := "🟢"
+			if !r.Active {
+				status = "🚫"
+			}
+			lines = append(lines,
+				fmt.Sprintf("%s %d–%s: порог %.0f; с мат. %.2f; свои %.2f",
+					status, r.MinQty, maxTxt, r.Threshold, r.PriceWith, r.PriceOwn),
+			)
+		}
+
+		text := strings.Join(lines, "\n")
+		kb := tgbotapi.NewInlineKeyboardMarkup(
+			tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("➕ Добавить ступень", "rates:add")),
+			navKeyboard(true, true).InlineKeyboard[0],
+		)
+		b.send(tgbotapi.NewEditMessageTextAndMarkup(fromChat, cb.Message.MessageID, text, kb))
+		_ = b.states.Set(ctx, fromChat, dialog.StateAdmRatesList, st.Payload)
+		_ = b.answerCallback(cb, "Ок", false)
+		return
+
+		// Старт добавления ступени
+	case data == "rates:add":
+		st, _ := b.states.Get(ctx, fromChat) // <-- додали
+		if st.Payload == nil {
+			st.Payload = dialog.Payload{}
+		}
+		_ = b.states.Set(ctx, fromChat, dialog.StateAdmRatesCreateMin, st.Payload)
+		b.editTextWithNav(fromChat, cb.Message.MessageID, "Введите минимальное значение диапазона (целое число, например 1)")
+		_ = b.answerCallback(cb, "Ок", false)
+		return
+
+	case data == "rates:save":
+		st, _ := b.states.Get(ctx, fromChat)
+		place := st.Payload["place"].(string)
+		unit := st.Payload["unit"].(string)
+		withSub := false
+		if v, ok := st.Payload["with_sub"].(bool); ok {
+			withSub = v
+		}
+		minQty := int(st.Payload["min"].(float64))
+
+		var maxPtr *int
+		if st.Payload["max"] != nil {
+			m := int(st.Payload["max"].(float64))
+			maxPtr = &m
+		}
+		thr := st.Payload["thr"].(float64)
+		pwith := st.Payload["pwith"].(float64)
+		pown := st.Payload["pown"].(float64)
+
+		if _, err := b.cons.CreateRate(ctx, place, unit, withSub, minQty, maxPtr, thr, pwith, pown); err != nil {
+			b.editTextAndClear(fromChat, cb.Message.MessageID, "Ошибка сохранения тарифной ступени")
+			_ = b.answerCallback(cb, "Ошибка", true)
+			return
+		}
+
+		b.editTextAndClear(fromChat, cb.Message.MessageID, "Ступень сохранена.")
+
+		rates, _ := b.cons.ListRates(ctx, place, unit, withSub)
+		lines := []string{"Обновлённый список:"}
+		for _, r := range rates {
+			maxTxt := "∞"
+			if r.MaxQty != nil {
+				maxTxt = fmt.Sprintf("%d", *r.MaxQty)
+			}
+			status := "🟢"
+			if !r.Active {
+				status = "🚫"
+			}
+			lines = append(lines,
+				fmt.Sprintf("%s %d–%s: порог %.0f; с мат. %.2f; свои %.2f",
+					status, r.MinQty, maxTxt, r.Threshold, r.PriceWith, r.PriceOwn),
+			)
+		}
+		text := strings.Join(lines, "\n")
+		kb := tgbotapi.NewInlineKeyboardMarkup(
+			tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("➕ Добавить ступень", "rates:add")),
+			navKeyboard(true, true).InlineKeyboard[0],
+		)
+		m := tgbotapi.NewMessage(fromChat, text)
+		m.ReplyMarkup = kb
+		b.send(m)
+		_ = b.states.Set(ctx, fromChat, dialog.StateAdmRatesList, st.Payload)
+		_ = b.answerCallback(cb, "Сохранено", false)
 		return
 	}
 }

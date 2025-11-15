@@ -9,9 +9,6 @@ const (
 	StateAwaitRole    State = "await_role"
 	StateAwaitConfirm State = "await_confirm"
 
-	// Админ-меню
-	StateAdmMenu State = "adm_menu"
-
 	// Склады
 	StateAdmWhMenu   State = "adm_wh_menu"
 	StateAdmWhName   State = "adm_wh_name"   // ввод названия при создании
@@ -62,6 +59,25 @@ const (
 	StateAdmSubsPickPlaceUnit State = "adm_subs_pick_place_unit"
 	StateAdmSubsEnterQty      State = "adm_subs_enter_qty"
 	StateAdmSubsConfirm       State = "adm_subs_confirm"
+
+	// Админка тарифов аренды
+	StateAdmRatesMenu    State = "adm:rates:menu"
+	StateAdmRatesPickPU  State = "adm:rates:pick_pu"  // выбор место/единица
+	StateAdmRatesPickSub State = "adm:rates:pick_sub" // тумблер абонемента
+	StateAdmRatesList    State = "adm:rates:list"     // список ступеней
+
+	// Создание ступени
+	StateAdmRatesCreateMin       State = "adm:rates:create:min"
+	StateAdmRatesCreateMax       State = "adm:rates:create:max"
+	StateAdmRatesCreateThreshold State = "adm:rates:create:thr"
+	StateAdmRatesCreatePriceWith State = "adm:rates:create:pwith"
+	StateAdmRatesCreatePriceOwn  State = "adm:rates:create:pown"
+	StateAdmRatesConfirm         State = "adm:rates:confirm"
+
+	// Покупка абонемента мастером
+	StateSubBuyPlace   State = "sub_buy_place"   // выбор места (зал|кабинет)
+	StateSubBuyQty     State = "sub_buy_qty"     // ввод количества (часы|дни)
+	StateSubBuyConfirm State = "sub_buy_confirm" // подтверждение
 )
 
 type Payload map[string]any
