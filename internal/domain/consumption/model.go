@@ -33,7 +33,7 @@ type TierRate struct {
 	Unit      string
 	WithSub   bool
 	MinQty    int
-	MaxQty    *int // nil = без верхней границы
+	MaxQty    *int
 	Threshold float64
 	PriceWith float64
 	PriceOwn  float64
@@ -46,7 +46,7 @@ type RentRate struct {
 	Unit       string
 	WithSub    bool
 	MinQty     int
-	MaxQty     *int // nil = без верхней границы
+	MaxQty     *int
 	PerUnit    bool
 	Threshold  float64
 	PriceWith  float64

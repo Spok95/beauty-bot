@@ -33,21 +33,19 @@ type Bot struct {
 	inventory *inventory.Repo
 	cons      *consumption.Repo
 	subs      *subs.Repo
-	rates     *consumption.RateRepo
 }
 
 func New(api *tgbotapi.BotAPI, log *slog.Logger,
 	usersRepo *users.Repo, statesRepo *dialog.Repo,
 	adminChatID int64, catalogRepo *catalog.Repo,
 	materialsRepo *materials.Repo, inventoryRepo *inventory.Repo,
-	consRepo *consumption.Repo, subsRepo *subs.Repo,
-	rateRepo *consumption.RateRepo) *Bot {
+	consRepo *consumption.Repo, subsRepo *subs.Repo) *Bot {
 
 	return &Bot{
 		api: api, log: log, users: usersRepo, states: statesRepo,
 		adminChat: adminChatID, catalog: catalogRepo,
 		materials: materialsRepo, inventory: inventoryRepo,
-		cons: consRepo, subs: subsRepo, rates: rateRepo,
+		cons: consRepo, subs: subsRepo,
 	}
 }
 

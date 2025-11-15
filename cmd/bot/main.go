@@ -98,7 +98,6 @@ func main() {
 	inventoryRepo := inventory.NewRepo(pool)
 	consRepo := consumption.NewRepo(pool)
 	subsRepo := subs.NewRepo(pool)
-	rateRepo := consumption.NewRateRepo(pool)
 
 	srv := httpx.New(cfg.HTTP.Addr, cfg.Metrics.Enabled)
 	go func() {
@@ -117,7 +116,7 @@ func main() {
 		api.Debug = true
 	}
 
-	tg := bot.New(api, log, usersRepo, stateRepo, cfg.Telegram.AdminChatID, catalogRepo, materialsRepo, inventoryRepo, consRepo, subsRepo, rateRepo)
+	tg := bot.New(api, log, usersRepo, stateRepo, cfg.Telegram.AdminChatID, catalogRepo, materialsRepo, inventoryRepo, consRepo, subsRepo)
 
 	go func() {
 		if err := tg.Run(ctx, cfg.Telegram.RequestTimeoutSec); err != nil {
