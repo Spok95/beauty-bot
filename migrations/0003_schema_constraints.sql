@@ -39,10 +39,6 @@ ALTER TABLE materials
     ADD CONSTRAINT chk_materials_price_nonneg
         CHECK (price_per_unit >= 0);
 
-ALTER TABLE balances
-    ADD CONSTRAINT chk_balances_qty_nonneg
-        CHECK (qty >= 0);
-
 ALTER TABLE supplies
     ADD CONSTRAINT chk_supplies_costs_nonneg
         CHECK (unit_cost >= 0 AND total_cost >= 0);
@@ -99,7 +95,6 @@ ALTER TABLE consumption_items DROP CONSTRAINT IF EXISTS chk_consumption_items_no
 ALTER TABLE consumption_sessions DROP CONSTRAINT IF EXISTS chk_consumption_sessions_nonneg;
 ALTER TABLE rent_rates DROP CONSTRAINT IF EXISTS chk_rent_rates_nonneg;
 ALTER TABLE supplies DROP CONSTRAINT IF EXISTS chk_supplies_costs_nonneg;
-ALTER TABLE balances DROP CONSTRAINT IF EXISTS chk_balances_qty_nonneg;
 ALTER TABLE materials DROP CONSTRAINT IF EXISTS chk_materials_price_nonneg;
 
 -- 2. movements

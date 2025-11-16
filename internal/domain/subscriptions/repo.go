@@ -2,9 +2,12 @@ package subscriptions
 
 import (
 	"context"
+	"errors"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+var ErrInsufficientLimit = errors.New("subscriptions: insufficient limit")
 
 type Repo struct{ db *pgxpool.Pool }
 
@@ -41,9 +44,22 @@ func (r *Repo) ListByUserMonth(ctx context.Context, userID int64, month string) 
 }
 
 func (r *Repo) AddUsage(ctx context.Context, id int64, qty int) error {
-	const q = `UPDATE subscriptions SET used_qty = used_qty + $2, updated_at = NOW() WHERE id=$1`
-	_, err := r.db.Exec(ctx, q, id, qty)
-	return err
+	const q = `
+UPDATE subscriptions
+SET used_qty = used_qty + $2,
+    updated_at = NOW()
+WHERE id = $1
+  AND used_qty + $2 <= total_qty
+`
+	tag, err := r.db.Exec(ctx, q, id, qty)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		// либо не нашли абонемент, либо не хватает лимита
+		return ErrInsufficientLimit
+	}
+	return nil
 }
 
 func (r *Repo) CreateOrSetTotal(ctx context.Context, userID int64, place, unit, month string, total int) (int64, error) {
