@@ -98,18 +98,51 @@ CREATE INDEX IF NOT EXISTS idx_rent_rates_key
 
 -- ===== СИДЫ ПО ТЗ =====
 
--- ABONEMENT: ЗАЛ / ЧАС — цены зависят от лимита абонемента
-INSERT INTO rent_rates(place,unit,with_subscription,min_qty,max_qty,per_unit,threshold_materials,price_with_materials,price_own_materials)
-VALUES
-    ('hall','hour',TRUE, 30,45, TRUE, 100, 450, 590),
-    ('hall','hour',TRUE, 50,75, TRUE, 100, 420, 530),
-    ('hall','hour',TRUE, 80,100,TRUE, 100, 390, 480);
+-- АБОНЕМЕНТЫ: ЗАЛ / ЧАС — каждая строка = конкретный лимит
+INSERT INTO rent_rates(
+    place, unit, with_subscription,
+    min_qty, max_qty,
+    per_unit,
+    threshold_materials,
+    price_with_materials,
+    price_own_materials
+) VALUES
+      ('hall','hour',TRUE, 30,30, TRUE, 100, 450, 590),
+      ('hall','hour',TRUE, 35,35, TRUE, 100, 450, 590),
+      ('hall','hour',TRUE, 40,40, TRUE, 100, 450, 590),
+      ('hall','hour',TRUE, 45,45, TRUE, 100, 450, 590),
+      ('hall','hour',TRUE, 50,50, TRUE, 100, 420, 530),
+      ('hall','hour',TRUE, 55,55, TRUE, 100, 420, 530),
+      ('hall','hour',TRUE, 60,60, TRUE, 100, 420, 530),
+      ('hall','hour',TRUE, 65,65, TRUE, 100, 420, 530),
+      ('hall','hour',TRUE, 70,70, TRUE, 100, 420, 530),
+      ('hall','hour',TRUE, 75,75, TRUE, 100, 420, 530),
+      ('hall','hour',TRUE, 80,80, TRUE, 100, 390, 480),
+      ('hall','hour',TRUE, 85,85, TRUE, 100, 390, 480),
+      ('hall','hour',TRUE, 90,90, TRUE, 100, 390, 480),
+      ('hall','hour',TRUE, 95,95, TRUE, 100, 390, 480),
+      ('hall','hour',TRUE,100,100, TRUE, 100, 390, 480);
 
--- ABONEMENT: КАБИНЕТ / ДЕНЬ — цены зависят от лимита абонемента
-INSERT INTO rent_rates(place,unit,with_subscription,min_qty,max_qty,per_unit,threshold_materials,price_with_materials,price_own_materials)
-VALUES
-    ('cabinet','day',TRUE, 10,14, TRUE, 1000, 5000, 6250),
-    ('cabinet','day',TRUE, 15,20, TRUE, 1000, 4500, 6000);
+-- АБОНЕМЕНТЫ: КАБИНЕТ / ДЕНЬ
+INSERT INTO rent_rates(
+    place, unit, with_subscription,
+    min_qty, max_qty,
+    per_unit,
+    threshold_materials,
+    price_with_materials,
+    price_own_materials
+) VALUES
+      ('cabinet','day',TRUE,10,10, TRUE, 1000, 5000, 6250),
+      ('cabinet','day',TRUE,11,11, TRUE, 1000, 5000, 6250),
+      ('cabinet','day',TRUE,12,12, TRUE, 1000, 5000, 6250),
+      ('cabinet','day',TRUE,13,13, TRUE, 1000, 5000, 6250),
+      ('cabinet','day',TRUE,14,14, TRUE, 1000, 5000, 6250),
+      ('cabinet','day',TRUE,15,15, TRUE, 1000, 4500, 6000),
+      ('cabinet','day',TRUE,16,16, TRUE, 1000, 4500, 6000),
+      ('cabinet','day',TRUE,17,17, TRUE, 1000, 4500, 6000),
+      ('cabinet','day',TRUE,18,18, TRUE, 1000, 4500, 6000),
+      ('cabinet','day',TRUE,19,19, TRUE, 1000, 4500, 6000),
+      ('cabinet','day',TRUE,20,20, TRUE, 1000, 4500, 6000);
 
 -- БЕЗ АБОНЕМЕНТА: ЗАЛ / ЧАС — почасово 1..9 (per_unit=TRUE), с 10 часов — фикс за сессию (per_unit=FALSE)
 INSERT INTO rent_rates(place,unit,with_subscription,min_qty,max_qty,per_unit,threshold_materials,price_with_materials,price_own_materials) VALUES

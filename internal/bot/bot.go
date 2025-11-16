@@ -2,6 +2,7 @@ package bot
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strconv"
@@ -11,7 +12,7 @@ import (
 	"github.com/Spok95/beauty-bot/internal/domain/consumption"
 	"github.com/Spok95/beauty-bot/internal/domain/inventory"
 	"github.com/Spok95/beauty-bot/internal/domain/materials"
-	subs "github.com/Spok95/beauty-bot/internal/domain/subscriptions"
+	subsdomain "github.com/Spok95/beauty-bot/internal/domain/subscriptions"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 
 	"github.com/Spok95/beauty-bot/internal/dialog"
@@ -32,14 +33,14 @@ type Bot struct {
 	materials *materials.Repo
 	inventory *inventory.Repo
 	cons      *consumption.Repo
-	subs      *subs.Repo
+	subs      *subsdomain.Repo
 }
 
 func New(api *tgbotapi.BotAPI, log *slog.Logger,
 	usersRepo *users.Repo, statesRepo *dialog.Repo,
 	adminChatID int64, catalogRepo *catalog.Repo,
 	materialsRepo *materials.Repo, inventoryRepo *inventory.Repo,
-	consRepo *consumption.Repo, subsRepo *subs.Repo) *Bot {
+	consRepo *consumption.Repo, subsRepo *subsdomain.Repo) *Bot {
 
 	return &Bot{
 		api: api, log: log, users: usersRepo, states: statesRepo,
@@ -1626,39 +1627,6 @@ func (b *Bot) onMessage(ctx context.Context, upd tgbotapi.Update) {
 		m.ReplyMarkup = kb
 		b.send(m)
 		return
-
-	case dialog.StateSubBuyQty:
-		s := strings.TrimSpace(msg.Text)
-		s = strings.ReplaceAll(s, ",", ".")
-		if strings.Contains(s, ".") {
-			b.send(tgbotapi.NewMessage(chatID, "Введите целое число (без дробной части)."))
-			return
-		}
-		n, err := strconv.ParseInt(s, 10, 64)
-		if err != nil || n <= 0 {
-			b.send(tgbotapi.NewMessage(chatID, "Некорректное значение. Введите целое положительное число."))
-			return
-		}
-		st.Payload["qty"] = float64(n)
-		_ = b.states.Set(ctx, chatID, dialog.StateSubBuyConfirm, st.Payload)
-
-		place := st.Payload["place"].(string)
-		unit := st.Payload["unit"].(string)
-		month := time.Now().Format("2006-01")
-		txt := fmt.Sprintf("Подтвердите покупку абонемента:\nМесяц: %s\nМесто: %s\nЕдиница: %s\nОбъём: %d",
-			month,
-			map[string]string{"hall": "Зал", "cabinet": "Кабинет"}[place],
-			map[string]string{"hour": "часы", "day": "дни"}[unit],
-			n,
-		)
-		kb := tgbotapi.NewInlineKeyboardMarkup(
-			tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("✅ Подтвердить", "subbuy:confirm")),
-			navKeyboard(true, true).InlineKeyboard[0],
-		)
-		m := tgbotapi.NewMessage(chatID, txt)
-		m.ReplyMarkup = kb
-		b.send(m)
-		return
 	}
 }
 
@@ -2488,21 +2456,27 @@ func (b *Bot) onCallback(ctx context.Context, upd tgbotapi.Update) {
 		if u, _ := b.users.GetByTelegramID(ctx, cb.From.ID); u != nil {
 			month := time.Now().Format("2006-01")
 			if s, err := b.subs.GetActive(ctx, u.ID, place, unit, month); err == nil && s != nil {
-				left := s.TotalQty - s.UsedQty
-				if left >= qty {
+				leftBefore := s.TotalQty - s.UsedQty
+				if leftBefore < 0 {
+					leftBefore = 0
+				}
+
+				if leftBefore >= qty {
+					// абонемента хватает
 					withSub = true
-					subLeft = &left
-					subLimitForPricing = s.TotalQty // для подбора ступени по общему объёму тарифа
-				} else if left > 0 && left < qty {
-					// Остатка не хватает на эту сессию → считаем БЕЗ абонемента, но покажем остаток в сводке.
-					subLeft = &left
+					leftAfter := leftBefore - qty
+					subLeft = &leftAfter
+					subLimitForPricing = s.TotalQty
+				} else if leftBefore > 0 && leftBefore < qty {
+					// на сессию не хватает → считаем без абонемента, но остаток покажем
 					withSub = false
+					subLeft = &leftBefore
 					subLimitForPricing = qty
 				}
 			}
 		}
 
-		// 3) расчёт по ступеням через доменный метод
+		// 3) расчёт по ступеням
 		rent, tariff, rounded, need, _, err := b.cons.ComputeRent(ctx, place, unit, withSub, qty, mats, subLimitForPricing)
 		if err != nil {
 			b.send(tgbotapi.NewMessage(fromChat,
@@ -2527,25 +2501,74 @@ func (b *Bot) onCallback(ctx context.Context, upd tgbotapi.Update) {
 		} else {
 			delete(st.Payload, "sub_left")
 		}
+
 		_ = b.states.Set(ctx, fromChat, dialog.StateConsSummary, st.Payload)
 
-		// 5) вывод сводки (покажем остаток, если есть)
+		// 5) вывод сводки
+
 		subBadge := ""
 		if withSub {
 			subBadge = " (с абонементом)"
 		}
+
+		// строка про абонемент под сводкой
 		subLine := ""
+		var subLeftInt *int
 		if v, ok := st.Payload["sub_left"].(float64); ok {
 			left := int(v)
+			subLeftInt = &left
 			if withSub {
-				subLine = fmt.Sprintf("\nОстаток абонемента: %d %s", left, map[string]string{"hour": "часов", "day": "дней"}[unit])
+				subLine = fmt.Sprintf("\nОстаток абонемента: %d %s",
+					left, map[string]string{"hour": "часов", "day": "дней"}[unit])
 			} else if left > 0 {
 				subLine = fmt.Sprintf("\nАбонемент: остаток %d %s (на эту сессию не хватает, расчёт без абонемента).",
 					left, map[string]string{"hour": "часов", "day": "дней"}[unit])
 			}
 		}
 
-		txt := fmt.Sprintf(
+		// предупреждение перед сводкой — только если есть абонемент, но часов на сессию не хватает
+		warn := ""
+		if !withSub && subLeftInt != nil && *subLeftInt > 0 && *subLeftInt < qty {
+			left := *subLeftInt
+
+			// гипотетическая аренда, если бы вся эта сессия прошла по абонементу
+			var rentWithSubHypo float64
+			if u, _ := b.users.GetByTelegramID(ctx, cb.From.ID); u != nil {
+				month := time.Now().Format("2006-01")
+				if s, err := b.subs.GetActive(ctx, u.ID, place, unit, month); err == nil && s != nil {
+					if r2, _, _, _, _, err2 := b.cons.ComputeRent(ctx, place, unit, true, qty, mats, s.TotalQty); err2 == nil {
+						rentWithSubHypo = r2
+					}
+				}
+			}
+
+			warn = fmt.Sprintf(
+				"⚠️ Обратите внимание: в абонементе осталось %d %s, вы указали %d %s.\n"+
+					"На текущую сессию абонемента не хватает, поэтому при подтверждении она будет целиком посчитана по тарифу без абонемента: аренда %.2f ₽.\n",
+				left, map[string]string{"hour": "часов", "day": "дней"}[unit],
+				qty, map[string]string{"hour": "часов", "day": "дней"}[unit],
+				rent,
+			)
+
+			if rentWithSubHypo > 0 {
+				warn += fmt.Sprintf(
+					"Если бы вся сессия считалась по абонементу, аренда составила бы %.2f ₽.\n",
+					rentWithSubHypo,
+				)
+			}
+
+			warn += "Вы можете:\n" +
+				"• изменить количество до %d %s и сначала израсходовать остаток абонемента;\n" +
+				"• купить новый абонемент и затем учитывать новые часы по нему;\n" +
+				"• подтвердить текущую сводку и оплатить по тарифу без абонемента."
+			warn = fmt.Sprintf(
+				warn,
+				left, map[string]string{"hour": "часов", "day": "дней"}[unit],
+			)
+		}
+
+		// основной текст сводки
+		mainTxt := fmt.Sprintf(
 			"Сводка затрат для оплаты%s:\nПомещение: %s\nКол-во: %d %s\nМатериалы: %.2f ₽ (для порога учтено %.0f ₽; порог %.0f ₽)\nАренда: %.2f ₽ (%s)\nИтого к оплате: %.2f ₽%s",
 			subBadge,
 			map[string]string{"hall": "Зал", "cabinet": "Кабинет"}[place],
@@ -2554,21 +2577,67 @@ func (b *Bot) onCallback(ctx context.Context, upd tgbotapi.Update) {
 			rent, tariff, total, subLine,
 		)
 
-		kb := tgbotapi.NewInlineKeyboardMarkup(
-			tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("✅ Подтвердить", "cons:confirm")),
-			tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("✏️ Изменить", "cons:edit")),
-			navKeyboard(true, true).InlineKeyboard[0],
-		)
+		txt := mainTxt
+		if warn != "" {
+			txt = warn + "\n\n" + mainTxt
+		}
+
+		// клавиатура
+		rows := [][]tgbotapi.InlineKeyboardButton{
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("✅ Подтвердить", "cons:confirm"),
+			),
+		}
+		if warn != "" {
+			rows = append(rows,
+				tgbotapi.NewInlineKeyboardRow(
+					tgbotapi.NewInlineKeyboardButtonData("✏️ Изменить", "cons:edit"),
+					tgbotapi.NewInlineKeyboardButtonData("🧾 Купить абонемент", "cons:buy_sub"),
+				),
+			)
+		} else {
+			rows = append(rows,
+				tgbotapi.NewInlineKeyboardRow(
+					tgbotapi.NewInlineKeyboardButtonData("✏️ Изменить", "cons:edit"),
+				),
+			)
+		}
+		rows = append(rows, navKeyboard(true, true).InlineKeyboard[0])
+
+		kb := tgbotapi.NewInlineKeyboardMarkup(rows...)
 		b.send(tgbotapi.NewEditMessageTextAndMarkup(fromChat, cb.Message.MessageID, txt, kb))
 		_ = b.answerCallback(cb, "Ок", false)
 		return
 
 	case data == "cons:edit":
 		st, _ := b.states.Get(ctx, fromChat)
-		place := st.Payload["place"].(string)
-		unit := st.Payload["unit"].(string)
-		qty := int(st.Payload["qty"].(float64))
-		items := b.consParseItems(st.Payload["items"])
+
+		placeRaw, okPlace := st.Payload["place"]
+		unitRaw, okUnit := st.Payload["unit"]
+		qtyRaw, okQty := st.Payload["qty"]
+		itemsRaw, okItems := st.Payload["items"]
+
+		if !okPlace || !okUnit || !okQty || !okItems {
+			// Старая/неактуальная сводка – предложим начать заново
+			b.editTextAndClear(fromChat, cb.Message.MessageID,
+				"Эта сводка уже неактуальна. Начните новую сессию через меню «Расход/Аренда».")
+			_ = b.answerCallback(cb, "Сводка устарела", true)
+			return
+		}
+
+		place, ok1 := placeRaw.(string)
+		unit, ok2 := unitRaw.(string)
+		qtyF, ok3 := qtyRaw.(float64)
+		if !ok1 || !ok2 || !ok3 {
+			b.editTextAndClear(fromChat, cb.Message.MessageID,
+				"Эта сводка уже неактуальна. Начните новую сессию через меню «Расход/Аренда».")
+			_ = b.answerCallback(cb, "Сводка устарела", true)
+			return
+		}
+
+		qty := int(qtyF)
+		items := b.consParseItems(itemsRaw)
+
 		_ = b.states.Set(ctx, fromChat, dialog.StateConsCart, st.Payload)
 		b.showConsCart(ctx, fromChat, &cb.Message.MessageID, place, unit, qty, items)
 		_ = b.answerCallback(cb, "Ок", false)
@@ -2576,12 +2645,21 @@ func (b *Bot) onCallback(ctx context.Context, upd tgbotapi.Update) {
 
 	case data == "cons:confirm":
 		st, _ := b.states.Get(ctx, fromChat)
+		if st == nil || st.Payload == nil {
+			// вся сессия потерялась / устарела — аккуратно выходим
+			b.editTextAndClear(fromChat, cb.Message.MessageID,
+				"Сессия устарела. Начните заново через кнопку «Расход/Аренда».")
+			_ = b.answerCallback(cb, "Ошибка", true)
+			return
+		}
+
 		u, _ := b.users.GetByTelegramID(ctx, cb.From.ID)
 		if u == nil || u.Status != "approved" {
 			b.editTextAndClear(fromChat, cb.Message.MessageID, "Нет доступа")
 			_ = b.answerCallback(cb, "Ошибка", true)
 			return
 		}
+
 		place := st.Payload["place"].(string)
 		unit := st.Payload["unit"].(string)
 		qty := int(st.Payload["qty"].(float64))
@@ -2616,15 +2694,44 @@ func (b *Bot) onCallback(ctx context.Context, upd tgbotapi.Update) {
 		// Учёт абонемента: спишем использованное количество (часы/дни) за текущий месяц
 		if withSub && b.subs != nil {
 			month := time.Now().Format("2006-01")
-			if s, err := b.subs.GetActive(ctx, u.ID, place, unit, month); err == nil && s != nil {
-				_ = b.subs.AddUsage(ctx, s.ID, qty)
-			} else {
-				// просто подсветим админу, что абонемента нет
+			s, err := b.subs.GetActive(ctx, u.ID, place, unit, month)
+			if err != nil || s == nil {
+				// подсветим админу, что абонемента нет, хотя флаг стоит
 				if b.adminChat != 0 {
 					b.send(tgbotapi.NewMessage(b.adminChat,
 						fmt.Sprintf("ℹ️ У мастера id %d нет абонемента на %s/%s (%s), но сессия проведена с флагом абонемента.",
-							u.ID, map[string]string{"hall": "Зал", "cabinet": "Кабинет"}[place],
-							map[string]string{"hour": "час", "day": "день"}[unit], month)))
+							u.ID,
+							map[string]string{"hall": "Зал", "cabinet": "Кабинет"}[place],
+							map[string]string{"hour": "час", "day": "день"}[unit],
+							month,
+						)))
+				}
+			} else {
+				// остаток ДО списания
+				leftBefore := s.TotalQty - s.UsedQty
+				if leftBefore < 0 {
+					leftBefore = 0
+				}
+
+				if err := b.subs.AddUsage(ctx, s.ID, qty); err != nil {
+					if errors.Is(err, subsdomain.ErrInsufficientLimit) && b.adminChat != 0 {
+						b.send(tgbotapi.NewMessage(b.adminChat,
+							fmt.Sprintf("⚠️ Не удалось списать %d %s абонемента для мастера id %d: недостаточно лимита.",
+								qty,
+								map[string]string{"hour": "часов", "day": "дней"}[unit],
+								u.ID,
+							)))
+					}
+				} else {
+					// если после списания абонемент исчерпан — предложим купить новый
+					leftAfter := leftBefore - qty
+					if leftAfter <= 0 {
+						// информационное сообщение мастеру
+						msg := tgbotapi.NewMessage(fromChat,
+							"Абонемент по этому помещению полностью использован.\nХотите приобрести новый абонемент?")
+						msg.ReplyMarkup = b.subBuyPlaceKeyboard()
+						b.send(msg)
+					}
 				}
 			}
 		}
@@ -2655,12 +2762,6 @@ func (b *Bot) onCallback(ctx context.Context, upd tgbotapi.Update) {
 			// кто подтвердил
 			u, _ := b.users.GetByTelegramID(ctx, cb.From.ID)
 
-			// читаем данные из payload текущей сессии
-			place := st.Payload["place"].(string)
-			unit := st.Payload["unit"].(string)
-			qtyI := int(st.Payload["qty"].(float64))
-			items := b.consParseItems(st.Payload["items"])
-
 			// соберём удобочитаемый текст
 			placeRU := map[string]string{"hall": "Зал", "cabinet": "Кабинет"}
 			unitRU := map[string]string{"hour": "ч", "day": "дн"}
@@ -2672,7 +2773,7 @@ func (b *Bot) onCallback(ctx context.Context, upd tgbotapi.Update) {
 			} else {
 				_, _ = fmt.Fprintf(&sb, "Мастер: @%s (id %d)\n", cb.From.UserName, cb.From.ID)
 			}
-			_, _ = fmt.Fprintf(&sb, "Помещение: %s\nКол-во: %d %s\n", placeRU[place], qtyI, unitRU[unit])
+			_, _ = fmt.Fprintf(&sb, "Помещение: %s\nКол-во: %d %s\n", placeRU[place], qty, unitRU[unit])
 
 			// материалы
 			_, _ = fmt.Fprintf(&sb, "Материалы:\n")
@@ -2691,12 +2792,8 @@ func (b *Bot) onCallback(ctx context.Context, upd tgbotapi.Update) {
 			}
 
 			// финансы: округлённая сумма материалов, аренда, итого — у нас уже посчитаны
-			rounded := st.Payload["mats_rounded"].(float64)
-			rent := st.Payload["rent"].(float64)
-			matsFact := st.Payload["mats_sum"].(float64)
-			total := rent + matsFact
 			_, _ = fmt.Fprintf(&sb, "\nМатериалы (факт): %.2f ₽, округл.: %.2f ₽\nАренда: %.2f ₽\nИтого: %.2f ₽",
-				matsFact, rounded, rent, total)
+				mats, rounded, rent, total)
 
 			b.send(tgbotapi.NewMessage(b.adminChat, sb.String()))
 		}
@@ -2706,6 +2803,25 @@ func (b *Bot) onCallback(ctx context.Context, upd tgbotapi.Update) {
 		_ = b.answerCallback(cb, "Готово", false)
 		return
 
+		// Покупка абонемента из сводки расхода/аренды
+	case data == "cons:buy_sub":
+		u, _ := b.users.GetByTelegramID(ctx, cb.From.ID)
+		if u == nil || u.Status != users.StatusApproved || u.Role != users.RoleMaster {
+			_ = b.answerCallback(cb, "Недоступно", true)
+			return
+		}
+
+		// Сбросим состояние под покупку абонемента
+		_ = b.states.Set(ctx, fromChat, dialog.StateSubBuyPlace, dialog.Payload{})
+
+		msg := tgbotapi.NewMessage(fromChat, "Выберите тип абонемента:")
+		msg.ReplyMarkup = b.subBuyPlaceKeyboard()
+		b.send(msg)
+
+		_ = b.answerCallback(cb, "Ок", false)
+		return
+
+		// Покупка абонемента — выбор места
 		// Покупка абонемента — выбор места
 	case strings.HasPrefix(data, "subbuy:place:"):
 		place := strings.TrimPrefix(data, "subbuy:place:")
@@ -2713,11 +2829,127 @@ func (b *Bot) onCallback(ctx context.Context, upd tgbotapi.Update) {
 		if place == "cabinet" {
 			unit = "day"
 		}
-		_ = b.states.Set(ctx, fromChat, dialog.StateSubBuyQty, dialog.Payload{
-			"place": place, "unit": unit,
-		})
-		b.editTextWithNav(fromChat, cb.Message.MessageID,
-			fmt.Sprintf("Введите объём (%s):", map[string]string{"hour": "часы", "day": "дни"}[unit]))
+
+		// Тарифы-абонементы для выбранного помещения: одна строка = один конкретный объём
+		rates, err := b.cons.ListRates(ctx, place, unit, true)
+		if err != nil {
+			b.editTextAndClear(fromChat, cb.Message.MessageID, "Ошибка загрузки тарифов абонементов.")
+			_ = b.answerCallback(cb, "Ошибка", true)
+			return
+		}
+		if len(rates) == 0 {
+			b.editTextAndClear(fromChat, cb.Message.MessageID, "Для этого помещения нет настроенных абонементов.")
+			_ = b.answerCallback(cb, "Нет тарифов", true)
+			return
+		}
+
+		// Сохраняем место/единицу в состоянии
+		st, _ := b.states.Get(ctx, fromChat)
+		if st.Payload == nil {
+			st.Payload = dialog.Payload{}
+		}
+		st.Payload["place"] = place
+		st.Payload["unit"] = unit
+		_ = b.states.Set(ctx, fromChat, dialog.StateSubBuyPlace, st.Payload)
+
+		// Кнопки: одна строка rent_rates = один готовый абонемент
+		rows := [][]tgbotapi.InlineKeyboardButton{}
+		unitFull := map[string]string{"hour": "часов", "day": "дней"}[unit]
+		unitShort := map[string]string{"hour": "ч", "day": "дн"}[unit]
+
+		for _, r := range rates {
+			qty := r.MinQty // по новой концепции min_qty == max_qty == объём абонемента
+
+			text := fmt.Sprintf(
+				"%d %s в месяц: с мат. %.0f ₽/%s, свои %.0f ₽/%s",
+				qty, unitFull,
+				r.PriceWith, unitShort,
+				r.PriceOwn, unitShort,
+			)
+			data := fmt.Sprintf("subbuy:plan:%d", r.ID) // выбираем конкретный план
+			rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData(text, data),
+			))
+		}
+
+		// Навигация Назад/Отменить
+		rows = append(rows, navKeyboard(true, true).InlineKeyboard[0])
+
+		kb := tgbotapi.NewInlineKeyboardMarkup(rows...)
+		title := fmt.Sprintf("Выберите абонемент для %s:",
+			map[string]string{"hall": "общего зала", "cabinet": "кабинета"}[place])
+
+		b.send(tgbotapi.NewEditMessageTextAndMarkup(fromChat, cb.Message.MessageID, title, kb))
+		_ = b.answerCallback(cb, "Ок", false)
+		return
+
+		// Покупка абонемента — выбор конкретного плана
+	case strings.HasPrefix(data, "subbuy:plan:"):
+		idStr := strings.TrimPrefix(data, "subbuy:plan:")
+		rateID, err := strconv.ParseInt(idStr, 10, 64)
+		if err != nil {
+			_ = b.answerCallback(cb, "Некорректные данные", true)
+			return
+		}
+
+		st, _ := b.states.Get(ctx, fromChat)
+		if st.Payload == nil {
+			st.Payload = dialog.Payload{}
+		}
+		place, ok1 := st.Payload["place"].(string)
+		unit, ok2 := st.Payload["unit"].(string)
+		if !ok1 || !ok2 {
+			b.editTextAndClear(fromChat, cb.Message.MessageID, "Сессия покупки абонемента потеряна. Начните заново.")
+			_ = b.answerCallback(cb, "Ошибка", true)
+			return
+		}
+
+		// Ищем выбранный тариф
+		rates, err := b.cons.ListRates(ctx, place, unit, true)
+		if err != nil {
+			b.editTextAndClear(fromChat, cb.Message.MessageID, "Ошибка загрузки тарифов.")
+			_ = b.answerCallback(cb, "Ошибка", true)
+			return
+		}
+		var rate *consumption.TierRate
+		for i := range rates {
+			if rates[i].ID == rateID {
+				rate = &rates[i]
+				break
+			}
+		}
+		if rate == nil {
+			b.editTextAndClear(fromChat, cb.Message.MessageID, "Тариф не найден.")
+			_ = b.answerCallback(cb, "Ошибка", true)
+			return
+		}
+
+		// Объём абонемента = min_qty (min_qty == max_qty по нашей модели)
+		qty := rate.MinQty
+		st.Payload["qty"] = float64(qty)
+		_ = b.states.Set(ctx, fromChat, dialog.StateSubBuyConfirm, st.Payload)
+
+		unitFull := map[string]string{"hour": "часов", "day": "дней"}[unit]
+		unitShort := map[string]string{"hour": "ч", "day": "дн"}[unit]
+
+		txt := fmt.Sprintf(
+			"Абонемент:\nПомещение: %s\nЛимит: %d %s в месяц\nПорог материалов: %.0f ₽ на %s\nЦена при выполнении порога: %.2f ₽ за %s\nЦена без выполнения порога: %.2f ₽ за %s\n\nОформить этот абонемент?",
+			map[string]string{"hall": "Общий зал", "cabinet": "Кабинет"}[place],
+			qty, unitFull,
+			rate.Threshold,
+			unitShort,
+			rate.PriceWith, unitShort,
+			rate.PriceOwn, unitShort,
+		)
+
+		kb := tgbotapi.NewInlineKeyboardMarkup(
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("✅ Оформить", "subbuy:confirm"),
+			),
+			navKeyboard(true, true).InlineKeyboard[0],
+		)
+
+		b.send(tgbotapi.NewEditMessageTextAndMarkup(fromChat, cb.Message.MessageID, txt, kb))
 		_ = b.answerCallback(cb, "Ок", false)
 		return
 
