@@ -72,6 +72,51 @@ func (r *Repo) ListByUserMonth(ctx context.Context, userID int64, month string) 
 	return out, nil
 }
 
+// ListActiveByPlaceUnitMonth возвращает все НЕвыработанные абонементы мастера
+// по конкретному месту/единице/месяцу, в порядке FIFO.
+func (r *Repo) ListActiveByPlaceUnitMonth(
+	ctx context.Context,
+	userID int64,
+	place, unit, month string,
+) ([]Subscription, error) {
+	const q = `
+SELECT id, user_id, place, unit, month, plan_limit, total_qty, used_qty, created_at, updated_at
+FROM subscriptions
+WHERE user_id = $1
+  AND place   = $2
+  AND unit    = $3
+  AND month   = $4
+  AND total_qty > used_qty
+ORDER BY created_at;
+`
+	rows, err := r.db.Query(ctx, q, userID, place, unit, month)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var res []Subscription
+	for rows.Next() {
+		var s Subscription
+		if err := rows.Scan(
+			&s.ID,
+			&s.UserID,
+			&s.Place,
+			&s.Unit,
+			&s.Month,
+			&s.PlanLimit,
+			&s.TotalQty,
+			&s.UsedQty,
+			&s.CreatedAt,
+			&s.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		res = append(res, s)
+	}
+	return res, nil
+}
+
 func (r *Repo) AddUsage(ctx context.Context, id int64, qty int) error {
 	const q = `
 UPDATE subscriptions

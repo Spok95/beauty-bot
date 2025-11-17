@@ -54,3 +54,22 @@ type RentRate struct {
 	ActiveFrom time.Time
 	ActiveTo   *time.Time
 }
+
+type RentSplitPartInput struct {
+	WithSub            bool // true — часть по абонементу, false — без абонемента
+	Qty                int  // сколько часов/дней в этой части
+	SubLimitForPricing int  // лимит плана, по которому выбираем тариф (для withSub), иначе можно передавать Qty
+}
+
+type RentSplitPartResult struct {
+	WithSub            bool
+	Qty                int
+	SubLimitForPricing int
+
+	Rent          float64   // сумма аренды по этой части
+	Tariff        string    // текст: "по ставке с материалами" / "по ставке со своими материалами"
+	Need          float64   // порог материалов для этой части
+	MaterialsUsed float64   // сколько из общей суммы материалов "ушло" на выполнение порога для этой части
+	ThresholdMet  bool      // выполнен ли порог
+	Rate          *RentRate // сам тариф
+}
