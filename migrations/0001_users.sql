@@ -205,14 +205,16 @@ CREATE TABLE IF NOT EXISTS subscriptions (
                                              place       TEXT        NOT NULL,   -- 'hall' | 'cabinet'
                                              unit        TEXT        NOT NULL,   -- 'hour' | 'day'
                                              month       TEXT        NOT NULL,   -- 'YYYY-MM'
-                                             total_qty   INT         NOT NULL,   -- куплено часов/дней
+                                             plan_limit  INT         NOT NULL,   -- номинальный лимит плана (30, 50, ...)
+                                             total_qty   INT         NOT NULL,   -- всего куплено часов/дней по этому плану за месяц
                                              used_qty    INT         NOT NULL DEFAULT 0,
                                              created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                                              updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                                             CONSTRAINT uq_subs UNIQUE (user_id, place, unit, month)
+                                             CONSTRAINT uq_subs UNIQUE (user_id, place, unit, month, plan_limit)
 );
 
 CREATE INDEX IF NOT EXISTS idx_subs_user_month ON subscriptions (user_id, month);
+
 
 -- +goose Down
 DROP TABLE IF EXISTS balances;

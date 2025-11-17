@@ -2466,7 +2466,7 @@ func (b *Bot) onCallback(ctx context.Context, upd tgbotapi.Update) {
 					withSub = true
 					leftAfter := leftBefore - qty
 					subLeft = &leftAfter
-					subLimitForPricing = s.TotalQty
+					subLimitForPricing = s.PlanLimit
 				} else if leftBefore > 0 && leftBefore < qty {
 					// на сессию не хватает → считаем без абонемента, но остаток покажем
 					withSub = false
@@ -2536,7 +2536,7 @@ func (b *Bot) onCallback(ctx context.Context, upd tgbotapi.Update) {
 			if u, _ := b.users.GetByTelegramID(ctx, cb.From.ID); u != nil {
 				month := time.Now().Format("2006-01")
 				if s, err := b.subs.GetActive(ctx, u.ID, place, unit, month); err == nil && s != nil {
-					if r2, _, _, _, _, err2 := b.cons.ComputeRent(ctx, place, unit, true, qty, mats, s.TotalQty); err2 == nil {
+					if r2, _, _, _, _, err2 := b.cons.ComputeRent(ctx, place, unit, true, qty, mats, s.PlanLimit); err2 == nil {
 						rentWithSubHypo = r2
 					}
 				}
