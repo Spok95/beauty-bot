@@ -36,14 +36,16 @@ const (
 	StateStockInQty  State = "stock_in_qty"  // ввод количества для прихода
 	StateStockOutQty State = "stock_out_qty" // ввод количества для списания
 
-	// Поставки (админ/администратор)
-	StateSupMenu      State = "sup_menu"
-	StateSupPickWh    State = "sup_pick_wh"
-	StateSupPickMat   State = "sup_pick_mat"
-	StateSupQty       State = "sup_qty"
-	StateSupUnitPrice State = "sup_unit_price"
-	StateSupCart      State = "sup_cart" // НОВОЕ: корзина с позициями
-	StateSupConfirm   State = "sup_confirm"
+	// Поставки
+	StateSupMenu         State = "sup_menu"
+	StateSupPickWh       State = "sup_pick_wh"
+	StateSupPickMat      State = "sup_pick_mat"
+	StateSupQty          State = "sup_qty"
+	StateSupUnitPrice    State = "sup_unit_price"
+	StateSupCart         State = "sup_cart" // корзина с позициями (старая логика)
+	StateSupConfirm      State = "sup_confirm"
+	StateSupExportPickWh State = "sup_export_wh"   // выбор склада для выгрузки материалов
+	StateSupImportFile   State = "sup_import_file" // ожидание файла с поступлением (используем позже)
 
 	// Расход/Аренда (мастер)
 	StateConsPlace   State = "cons_place" // выбор: зал/кабинет
