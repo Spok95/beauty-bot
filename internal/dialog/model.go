@@ -30,11 +30,14 @@ const (
 	StateAdmMatRename  State = "adm_mat_rename"
 
 	// Остатки/движения
-	StateStockPickWh State = "stock_pick_wh"
-	StateStockList   State = "stock_list"    // список материалов с остатком в выбранном складе
-	StateStockItem   State = "stock_item"    // карточка материала (остаток + действия)
-	StateStockInQty  State = "stock_in_qty"  // ввод количества для прихода
-	StateStockOutQty State = "stock_out_qty" // ввод количества для списания
+	StateStockPickWh       State = "stock_pick_wh"
+	StateStockList         State = "stock_list"        // список материалов с остатком в выбранном складе
+	StateStockItem         State = "stock_item"        // карточка материала (остаток + действия)
+	StateStockInQty        State = "stock_in_qty"      // ввод количества для прихода
+	StateStockOutQty       State = "stock_out_qty"     // ввод количества для списания
+	StateStockMenu         State = "stock_menu"        // главное меню «Остатки»
+	StateStockExportPickWh State = "stock_export_wh"   // выбор склада для выгрузки остатков
+	StateStockImportFile   State = "stock_import_file" // ожидание Excel с остатками
 
 	// Поставки
 	StateSupMenu         State = "sup_menu"

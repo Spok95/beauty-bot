@@ -117,6 +117,142 @@ func (b *Bot) downloadTelegramFile(fileID string) ([]byte, error) {
 	return data, nil
 }
 
+// handleStocksImportExcel читает Excel-файл с остатками и
+// подгоняет фактический остаток под qty из файла:
+// если qty > текущего остатка — делаем приход,
+// если qty < текущего остатка — списываем разницу.
+func (b *Bot) handleStocksImportExcel(ctx context.Context, chatID int64, u *users.User, data []byte) {
+	f, err := excelize.OpenReader(bytes.NewReader(data))
+	if err != nil {
+		b.send(tgbotapi.NewMessage(chatID, "Не удалось прочитать Excel-файл (повреждён или не .xlsx)."))
+		return
+	}
+	defer func() { _ = f.Close() }()
+
+	sheet := f.GetSheetName(f.GetActiveSheetIndex())
+	rows, err := f.GetRows(sheet)
+	if err != nil || len(rows) < 2 {
+		b.send(tgbotapi.NewMessage(chatID, "Файл не содержит данных (нет строк с материалами)."))
+		return
+	}
+
+	header := rows[0]
+	if len(header) < 8 {
+		b.send(tgbotapi.NewMessage(chatID, "Некорректный формат файла: ожидается минимум 8 колонок (warehouse_id ... qty)."))
+		return
+	}
+
+	var (
+		totalRows     int
+		totalIn       float64
+		totalOut      float64
+		warehouseID   int64
+		warehouseName string
+	)
+
+	if len(rows[1]) >= 2 {
+		whIDStr := strings.TrimSpace(rows[1][0])
+		if whIDStr != "" {
+			if id, err := strconv.ParseInt(whIDStr, 10, 64); err == nil {
+				warehouseID = id
+			}
+		}
+		warehouseName = strings.TrimSpace(rows[1][1])
+	}
+
+	if warehouseID == 0 {
+		b.send(tgbotapi.NewMessage(chatID, "Не удалось определить склад (проверьте колонку warehouse_id в файле)."))
+		return
+	}
+	if warehouseName == "" {
+		warehouseName = fmt.Sprintf("ID %d", warehouseID)
+	}
+
+	for i := 1; i < len(rows); i++ {
+		row := rows[i]
+		if len(row) < 8 {
+			continue
+		}
+
+		whIDStr := strings.TrimSpace(row[0])
+		matIDStr := strings.TrimSpace(row[4])
+		qtyStr := strings.TrimSpace(row[7]) // qty
+
+		if whIDStr == "" || matIDStr == "" {
+			continue
+		}
+
+		whID, err := strconv.ParseInt(whIDStr, 10, 64)
+		if err != nil {
+			b.send(tgbotapi.NewMessage(chatID,
+				fmt.Sprintf("Ошибка в строке %d: некорректный warehouse_id (%q).", i+1, whIDStr)))
+			return
+		}
+		if whID != warehouseID {
+			// для простоты считаем, что файл только по одному складу
+			b.send(tgbotapi.NewMessage(chatID,
+				fmt.Sprintf("Ошибка в строке %d: в файле обнаружен другой склад (warehouse_id %d).", i+1, whID)))
+			return
+		}
+
+		matID, err := strconv.ParseInt(matIDStr, 10, 64)
+		if err != nil {
+			b.send(tgbotapi.NewMessage(chatID,
+				fmt.Sprintf("Ошибка в строке %d: некорректный material_id (%q).", i+1, matIDStr)))
+			return
+		}
+
+		var newQty float64
+		if qtyStr == "" {
+			// по ТЗ: пусто = 0
+			newQty = 0
+		} else {
+			newQty, err = strconv.ParseFloat(strings.ReplaceAll(qtyStr, ",", "."), 64)
+			if err != nil || newQty < 0 {
+				b.send(tgbotapi.NewMessage(chatID,
+					fmt.Sprintf("Ошибка в строке %d: некорректное qty (%q). Используйте неотрицательное число.", i+1, qtyStr)))
+				return
+			}
+		}
+
+		curQty, err := b.materials.GetBalance(ctx, whID, matID)
+		if err != nil {
+			b.send(tgbotapi.NewMessage(chatID,
+				fmt.Sprintf("Ошибка получения остатка в строке %d (материал %d): %v", i+1, matID, err)))
+			return
+		}
+
+		delta := newQty - curQty
+		if delta > 0 {
+			// нужно добавить до фактического остатка
+			if err := b.inventory.Receive(ctx, u.ID, whID, matID, delta, "inventory_excel"); err != nil {
+				b.send(tgbotapi.NewMessage(chatID,
+					fmt.Sprintf("Ошибка прихода в строке %d (материал %d): %v", i+1, matID, err)))
+				return
+			}
+			totalIn += delta
+		} else if delta < 0 {
+			// нужно списать лишнее
+			if err := b.inventory.WriteOff(ctx, u.ID, whID, matID, -delta, "inventory_excel"); err != nil {
+				b.send(tgbotapi.NewMessage(chatID,
+					fmt.Sprintf("Ошибка списания в строке %d (материал %d): %v", i+1, matID, err)))
+				return
+			}
+			totalOut += -delta
+		}
+		totalRows++
+	}
+
+	msg := fmt.Sprintf(
+		"Остатки по складу «%s» обновлены из файла.\nСтрок обработано: %d\nПриход всего: %.3f\nСписание всего: %.3f",
+		warehouseName, totalRows, totalIn, totalOut,
+	)
+	b.send(tgbotapi.NewMessage(chatID, msg))
+
+	_ = b.states.Set(ctx, chatID, dialog.StateStockMenu, dialog.Payload{})
+	b.showStocksMenu(chatID, nil)
+}
+
 func (b *Bot) handleSuppliesImportExcel(ctx context.Context, chatID int64, u *users.User, data []byte) {
 	// 1) открываем Excel из байтов
 	f, err := excelize.OpenReader(bytes.NewReader(data))
@@ -545,6 +681,41 @@ func (b *Bot) showCategoryPick(ctx context.Context, chatID int64, editMsgID int)
 	b.send(tgbotapi.NewEditMessageTextAndMarkup(chatID, editMsgID, "Выберите категорию:", kb))
 }
 
+// выбор склада для выгрузки остатков
+func (b *Bot) showStockExportPickWarehouse(ctx context.Context, chatID int64, editMsgID *int) {
+	ws, err := b.catalog.ListWarehouses(ctx)
+	if err != nil {
+		if editMsgID != nil {
+			b.editTextAndClear(chatID, *editMsgID, "Ошибка загрузки складов")
+		} else {
+			b.send(tgbotapi.NewMessage(chatID, "Ошибка загрузки складов"))
+		}
+		return
+	}
+
+	rows := [][]tgbotapi.InlineKeyboardButton{}
+	for _, w := range ws {
+		if !w.Active {
+			continue
+		}
+		rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(w.Name, fmt.Sprintf("stock:expwh:%d", w.ID)),
+		))
+	}
+	rows = append(rows, navKeyboard(false, true).InlineKeyboard[0])
+
+	kb := tgbotapi.NewInlineKeyboardMarkup(rows...)
+
+	text := "Выберите склад для выгрузки остатков:"
+	if editMsgID != nil {
+		b.send(tgbotapi.NewEditMessageTextAndMarkup(chatID, *editMsgID, text, kb))
+	} else {
+		m := tgbotapi.NewMessage(chatID, text)
+		m.ReplyMarkup = kb
+		b.send(m)
+	}
+}
+
 func (b *Bot) showStockWarehouseList(ctx context.Context, chatID int64, editMsgID *int) {
 	ws, err := b.catalog.ListWarehouses(ctx)
 	if err != nil {
@@ -643,6 +814,24 @@ func (b *Bot) showStockItem(ctx context.Context, chatID int64, editMsgID int, wh
 	)
 
 	b.send(tgbotapi.NewEditMessageTextAndMarkup(chatID, editMsgID, text, kb))
+}
+
+func (b *Bot) showStocksMenu(chatID int64, editMsgID *int) {
+	kb := tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("⬇️ Выгрузить остатки", "stock:export"),
+			tgbotapi.NewInlineKeyboardButtonData("⬆️ Загрузить остатки", "stock:import"),
+		),
+		navKeyboard(false, true).InlineKeyboard[0],
+	)
+
+	if editMsgID != nil {
+		b.send(tgbotapi.NewEditMessageTextAndMarkup(chatID, *editMsgID, "Остатки — выберите действие", kb))
+	} else {
+		m := tgbotapi.NewMessage(chatID, "Остатки — выберите действие")
+		m.ReplyMarkup = kb
+		b.send(m)
+	}
 }
 
 func (b *Bot) showSuppliesMenu(chatID int64, editMsgID *int) {
@@ -859,6 +1048,113 @@ func (b *Bot) exportWarehouseMaterialsExcel(ctx context.Context, chatID int64, m
 	// Обновим текст исходного сообщения
 	b.editTextWithNav(chatID, msgID,
 		fmt.Sprintf("Сформирован файл с материалами для склада «%s».", wh.Name))
+}
+
+// exportWarehouseStocksExcel выгружает текущие остатки склада в Excel.
+func (b *Bot) exportWarehouseStocksExcel(ctx context.Context, chatID int64, msgID int, whID int64) {
+	// 1) склад
+	wh, err := b.catalog.GetWarehouseByID(ctx, whID)
+	if err != nil || wh == nil {
+		b.editTextAndClear(chatID, msgID, "Склад не найден")
+		return
+	}
+
+	// 2) материалы с балансами
+	items, err := b.materials.ListWithBalanceByWarehouse(ctx, whID)
+	if err != nil {
+		b.editTextAndClear(chatID, msgID, "Ошибка загрузки материалов")
+		return
+	}
+	if len(items) == 0 {
+		b.editTextAndClear(chatID, msgID, "На этом складе нет материалов")
+		return
+	}
+
+	// 3) категории
+	cats, err := b.catalog.ListCategories(ctx)
+	if err != nil {
+		b.editTextAndClear(chatID, msgID, "Ошибка загрузки категорий")
+		return
+	}
+	catNames := make(map[int64]string, len(cats))
+	for _, c := range cats {
+		catNames[c.ID] = c.Name
+	}
+
+	// 4) Excel
+	f := excelize.NewFile()
+	defer func() { _ = f.Close() }()
+
+	sheet := f.GetSheetName(f.GetActiveSheetIndex())
+
+	// заголовок
+	header := []interface{}{
+		"warehouse_id",
+		"warehouse_name",
+		"category_id",
+		"category_name",
+		"material_id",
+		"material_name",
+		"unit",
+		"qty", // текущий остаток; админ может изменить на фактический
+	}
+	if err := f.SetSheetRow(sheet, "A1", &header); err != nil {
+		b.editTextAndClear(chatID, msgID, "Ошибка формирования файла (заголовок)")
+		return
+	}
+
+	// строки
+	row := 2
+	for _, it := range items {
+		catName := catNames[it.CategoryID]
+		excelRow := []interface{}{
+			wh.ID,
+			wh.Name,
+			it.CategoryID,
+			catName,
+			it.ID,
+			it.Name,
+			string(it.Unit),
+			it.Balance, // текущий остаток
+		}
+		cell, err := excelize.CoordinatesToCellName(1, row)
+		if err != nil {
+			b.editTextAndClear(chatID, msgID, "Ошибка формирования файла (ячейки)")
+			return
+		}
+		if err := f.SetSheetRow(sheet, cell, &excelRow); err != nil {
+			b.editTextAndClear(chatID, msgID, "Ошибка формирования файла (строки)")
+			return
+		}
+		row++
+	}
+
+	// 5) в буфер
+	buf := &bytes.Buffer{}
+	if err := f.Write(buf); err != nil {
+		b.editTextAndClear(chatID, msgID, "Ошибка записи файла")
+		return
+	}
+
+	// 6) отправка в Telegram
+	fileName := fmt.Sprintf("stocks_%s_%s.xlsx",
+		wh.Name,
+		time.Now().Format("20060102_150405"),
+	)
+
+	doc := tgbotapi.NewDocument(chatID, tgbotapi.FileBytes{
+		Name:  fileName,
+		Bytes: buf.Bytes(),
+	})
+	doc.Caption = fmt.Sprintf(
+		"Остатки склада «%s».\nПри необходимости измените колонку qty и загрузите файл через «Загрузить остатки».",
+		wh.Name,
+	)
+
+	b.send(doc)
+
+	b.editTextWithNav(chatID, msgID,
+		fmt.Sprintf("Сформирован файл с остатками для склада «%s».", wh.Name))
 }
 
 // showSuppliesCart Показ корзины поставки: список позиций и итог
@@ -1469,8 +1765,8 @@ func (b *Bot) onMessage(ctx context.Context, upd tgbotapi.Update) {
 			b.showMaterialMenu(chatID, nil)
 			return
 		case "Остатки":
-			_ = b.states.Set(ctx, chatID, dialog.StateStockPickWh, dialog.Payload{})
-			b.showStockWarehouseList(ctx, chatID, nil)
+			_ = b.states.Set(ctx, chatID, dialog.StateStockMenu, dialog.Payload{})
+			b.showStocksMenu(chatID, nil)
 			return
 		case "Поставки":
 			_ = b.states.Set(ctx, chatID, dialog.StateSupMenu, dialog.Payload{})
@@ -1805,6 +2101,29 @@ func (b *Bot) onMessage(ctx context.Context, upd tgbotapi.Update) {
 		b.handleSuppliesImportExcel(ctx, chatID, u, data)
 		return
 
+	case dialog.StateStockImportFile:
+		// ждём документ Excel
+		if msg.Document == nil {
+			b.send(tgbotapi.NewMessage(chatID,
+				"Пожалуйста, отправьте Excel-файл (.xlsx) с остатками, который был выгружен через «Выгрузить остатки» и в котором заполнен столбец qty."))
+			return
+		}
+
+		u, err := b.users.GetByTelegramID(ctx, tgID)
+		if err != nil || u == nil {
+			b.send(tgbotapi.NewMessage(chatID, "Пользователь не найден или нет доступа."))
+			return
+		}
+
+		data, err := b.downloadTelegramFile(msg.Document.FileID)
+		if err != nil {
+			b.send(tgbotapi.NewMessage(chatID, "Не удалось скачать файл из Telegram: "+err.Error()))
+			return
+		}
+
+		b.handleStocksImportExcel(ctx, chatID, u, data)
+		return
+
 	case dialog.StateConsQty:
 		s := strings.TrimSpace(msg.Text)
 		s = strings.ReplaceAll(s, ",", ".")
@@ -2094,6 +2413,17 @@ func (b *Bot) onCallback(ctx context.Context, upd tgbotapi.Update) {
 			// из ввода имени — назад к выбору категории
 			b.showCategoryPick(ctx, fromChat, cb.Message.MessageID)
 			_ = b.states.Set(ctx, fromChat, dialog.StateAdmMatPickCat, dialog.Payload{})
+		case dialog.StateStockMenu:
+			b.showStocksMenu(fromChat, &cb.Message.MessageID)
+			_ = b.states.Set(ctx, fromChat, dialog.StateStockMenu, dialog.Payload{})
+
+		case dialog.StateStockExportPickWh:
+			b.showStocksMenu(fromChat, &cb.Message.MessageID)
+			_ = b.states.Set(ctx, fromChat, dialog.StateStockMenu, dialog.Payload{})
+
+		case dialog.StateStockImportFile:
+			b.showStocksMenu(fromChat, &cb.Message.MessageID)
+			_ = b.states.Set(ctx, fromChat, dialog.StateStockMenu, dialog.Payload{})
 		case dialog.StateStockList:
 			b.showStockWarehouseList(ctx, fromChat, &cb.Message.MessageID)
 			_ = b.states.Set(ctx, fromChat, dialog.StateStockPickWh, dialog.Payload{})
@@ -2622,6 +2952,28 @@ func (b *Bot) onCallback(ctx context.Context, upd tgbotapi.Update) {
 		_ = b.states.Set(ctx, fromChat, dialog.StateAdmSubsMenu, dialog.Payload{})
 		b.showSubsMenu(fromChat, nil)
 		_ = b.answerCallback(cb, "Готово", false)
+		return
+
+		// Остатки: экспорт / импорт
+	case data == "stock:export":
+		b.clearPrevStep(ctx, fromChat)
+
+		_ = b.states.Set(ctx, fromChat, dialog.StateStockExportPickWh, dialog.Payload{})
+		b.showStockExportPickWarehouse(ctx, fromChat, &cb.Message.MessageID)
+		_ = b.answerCallback(cb, "Ок", false)
+		return
+
+	case data == "stock:import":
+		_ = b.states.Set(ctx, fromChat, dialog.StateStockImportFile, dialog.Payload{})
+		b.editTextWithNav(fromChat, cb.Message.MessageID,
+			"Загрузите Excel-файл с остатками (тот, что вы выгрузили через «Выгрузить остатки» и отредактировали колонку qty).")
+		_ = b.answerCallback(cb, "Ок", false)
+		return
+
+	case strings.HasPrefix(data, "stock:expwh:"):
+		whID, _ := strconv.ParseInt(strings.TrimPrefix(data, "stock:expwh:"), 10, 64)
+		b.exportWarehouseStocksExcel(ctx, fromChat, cb.Message.MessageID, whID)
+		_ = b.answerCallback(cb, "Файл сформирован", false)
 		return
 
 		// Остатки: выбор склада -> список
