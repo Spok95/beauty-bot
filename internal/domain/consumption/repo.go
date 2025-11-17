@@ -218,43 +218,136 @@ LIMIT 1`
 	return &rr, nil
 }
 
-// ComputeRent применяет правила:
-//   - округление до десятков — только для проверки порога
-//   - per_unit=true → rent = qty * price; need = rr.Threshold * qty
-//   - per_unit=false → rent = price;     need = rr.Threshold (фикс)
-func (r *Repo) ComputeRent(ctx context.Context, place, unit string, withSub bool, sessionQty int, matsSum float64, subLimitForPricing int) (rent float64, tariff string, rounded float64, need float64, rate *RentRate, err error) {
-	// qtyForTier: по абонементу выбираем ступень по лимиту абонемента, без абонемента — по количеству в сессии
-	qtyForTier := sessionQty
-	if withSub {
-		qtyForTier = subLimitForPricing
-	}
-	rate, err = r.pickTier(ctx, place, unit, withSub, qtyForTier)
-	if err != nil || rate == nil {
-		return 0, "", 0, 0, nil, fmt.Errorf("нет активного тарифа для place=%s unit=%s withSub=%v qty=%d", place, unit, withSub, qtyForTier)
+// ComputeRentSplit считает аренду по нескольким частям сессии.
+// parts идут в порядке использования материалов: сначала старый абонемент, потом новый, потом без абонемента.
+// Общая сумма материалов matsSum (до округления) одна на всю сессию:
+//   - сначала на первую часть "резервируем" её порог Need1;
+//   - из остатка проверяем порог второй части и т.д.
+func (r *Repo) ComputeRentSplit(
+	ctx context.Context,
+	place, unit string,
+	matsSum float64,
+	parts []RentSplitPartInput,
+) (totalRent float64, rounded float64, totalNeed float64, results []RentSplitPartResult, err error) {
+	if len(parts) == 0 {
+		return 0, 0, 0, nil, nil
 	}
 
 	rounded = roundTo10(matsSum)
-	if rate.PerUnit {
-		need = rate.Threshold * float64(sessionQty)
-	} else {
-		need = rate.Threshold
+	remaining := rounded
+
+	results = make([]RentSplitPartResult, 0, len(parts))
+
+	for _, in := range parts {
+		if in.Qty <= 0 {
+			continue
+		}
+
+		qtyForTier := in.Qty
+		if in.WithSub {
+			qtyForTier = in.SubLimitForPricing
+		}
+
+		rate, errPick := r.pickTier(ctx, place, unit, in.WithSub, qtyForTier)
+		if errPick != nil || rate == nil {
+			return 0, 0, 0, nil, fmt.Errorf(
+				"нет активного тарифа для place=%s unit=%s withSub=%v qty=%d",
+				place, unit, in.WithSub, qtyForTier,
+			)
+		}
+
+		var need float64
+		if rate.PerUnit {
+			need = rate.Threshold * float64(in.Qty)
+		} else {
+			need = rate.Threshold
+		}
+		totalNeed += need
+
+		// Проверка порога для этой части
+		thrMet := remaining >= need
+
+		// Сколько материалов считаем "пошло" на эту часть
+		var used float64
+		if remaining > 0 {
+			if remaining >= need {
+				used = need
+				remaining -= need
+			} else {
+				used = remaining
+				remaining = 0
+			}
+		}
+
+		var price float64
+		var tariff string
+		if thrMet {
+			price = rate.PriceWith
+			tariff = "по ставке с материалами"
+		} else {
+			price = rate.PriceOwn
+			tariff = "по ставке со своими материалами"
+		}
+
+		var rent float64
+		if rate.PerUnit {
+			rent = float64(in.Qty) * price
+		} else {
+			rent = price
+		}
+
+		totalRent += rent
+
+		results = append(results, RentSplitPartResult{
+			WithSub:            in.WithSub,
+			Qty:                in.Qty,
+			SubLimitForPricing: in.SubLimitForPricing,
+			Rent:               rent,
+			Tariff:             tariff,
+			Need:               need,
+			MaterialsUsed:      used,
+			ThresholdMet:       thrMet,
+			Rate:               rate,
+		})
 	}
 
-	var price float64
-	if rounded >= need {
-		price = rate.PriceWith
-		tariff = "по ставке с материалами"
-	} else {
-		price = rate.PriceOwn
-		tariff = "по ставке со своими материалами"
+	return totalRent, rounded, totalNeed, results, nil
+}
+
+// ComputeRent — совместимая обёртка над ComputeRentSplit для одной части сессии.
+func (r *Repo) ComputeRent(
+	ctx context.Context,
+	place, unit string,
+	withSub bool,
+	sessionQty int,
+	matsSum float64,
+	subLimitForPricing int,
+) (rent float64, tariff string, rounded float64, need float64, rate *RentRate, err error) {
+	if sessionQty <= 0 {
+		return 0, "", 0, 0, nil, fmt.Errorf("sessionQty must be > 0")
 	}
 
-	if rate.PerUnit {
-		rent = float64(sessionQty) * price
-	} else {
-		rent = price
+	part := RentSplitPartInput{
+		WithSub: withSub,
+		Qty:     sessionQty,
 	}
-	return rent, tariff, rounded, need, rate, nil
+	if withSub {
+		part.SubLimitForPricing = subLimitForPricing
+	} else {
+		// для расчёта без абонемента тариф выбирается по объёму самой части
+		part.SubLimitForPricing = sessionQty
+	}
+
+	totalRent, rounded, totalNeed, parts, err := r.ComputeRentSplit(ctx, place, unit, matsSum, []RentSplitPartInput{part})
+	if err != nil {
+		return 0, "", 0, 0, nil, err
+	}
+	if len(parts) == 0 || parts[0].Rate == nil {
+		return 0, "", rounded, totalNeed, nil, fmt.Errorf("нет результатов расчёта аренды")
+	}
+
+	p := parts[0]
+	return totalRent, p.Tariff, rounded, totalNeed, p.Rate, nil
 }
 
 func roundTo10(x float64) float64 {
