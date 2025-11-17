@@ -5,7 +5,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -90,6 +92,134 @@ func (b *Bot) getConsumablesWarehouseID(ctx context.Context) (int64, error) {
 }
 
 /*** NAV HELPERS ***/
+
+// downloadTelegramFile скачивает файл по FileID через Telegram API.
+func (b *Bot) downloadTelegramFile(fileID string) ([]byte, error) {
+	url, err := b.api.GetFileDirectURL(fileID)
+	if err != nil {
+		return nil, fmt.Errorf("get file url: %w", err)
+	}
+
+	resp, err := http.Get(url)
+	if err != nil {
+		return nil, fmt.Errorf("download file: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("telegram returned status %s", resp.Status)
+	}
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read body: %w", err)
+	}
+	return data, nil
+}
+
+func (b *Bot) handleSuppliesImportExcel(ctx context.Context, chatID int64, u *users.User, data []byte) {
+	// 1) открываем Excel из байтов
+	f, err := excelize.OpenReader(bytes.NewReader(data))
+	if err != nil {
+		b.send(tgbotapi.NewMessage(chatID, "Не удалось прочитать Excel-файл (повреждён или не .xlsx)."))
+		return
+	}
+	defer func() { _ = f.Close() }()
+
+	sheet := f.GetSheetName(f.GetActiveSheetIndex())
+	rows, err := f.GetRows(sheet)
+	if err != nil || len(rows) < 2 {
+		b.send(tgbotapi.NewMessage(chatID, "Файл не содержит данных (нет строк с материалами)."))
+		return
+	}
+
+	// 2) проверим хотя бы первую строку заголовка по количеству колонок
+	header := rows[0]
+	if len(header) < 8 {
+		b.send(tgbotapi.NewMessage(chatID, "Некорректный формат файла: ожидается минимум 8 колонок (warehouse_id ... Количество)."))
+		return
+	}
+
+	var (
+		totalRows     int
+		totalQty      float64
+		warehouseID   int64
+		warehouseName string
+	)
+
+	// warehouse_id возьмём из первой строки данных (2-я строка файла)
+	if len(rows[1]) >= 2 {
+		whIDStr := strings.TrimSpace(rows[1][0])
+		if whIDStr != "" {
+			if id, err := strconv.ParseInt(whIDStr, 10, 64); err == nil {
+				warehouseID = id
+			}
+		}
+		if len(rows[1]) >= 2 {
+			warehouseName = strings.TrimSpace(rows[1][1])
+		}
+	}
+
+	// 3) если warehouseID не удалось вытащить — ругаемся
+	if warehouseID == 0 {
+		b.send(tgbotapi.NewMessage(chatID, "Не удалось определить склад (проверьте колонку warehouse_id в файле)."))
+		return
+	}
+
+	// 4) проходим по всем строкам, начиная со 2-й (индекс 1)
+	for i := 1; i < len(rows); i++ {
+		row := rows[i]
+		if len(row) < 8 {
+			continue
+		}
+		matIDStr := strings.TrimSpace(row[4])
+		qtyStr := strings.TrimSpace(row[7])
+
+		if matIDStr == "" || qtyStr == "" {
+			// пустая строка или количество не задано — пропускаем
+			continue
+		}
+
+		matID, err := strconv.ParseInt(matIDStr, 10, 64)
+		if err != nil {
+			// сообщаем, в какой строке ошибка
+			b.send(tgbotapi.NewMessage(chatID,
+				fmt.Sprintf("Ошибка в строке %d: некорректный material_id (%q). Исправьте файл и попробуйте снова.", i+1, matIDStr)))
+			return
+		}
+
+		qty, err := strconv.ParseFloat(strings.ReplaceAll(qtyStr, ",", "."), 64)
+		if err != nil || qty <= 0 {
+			b.send(tgbotapi.NewMessage(chatID,
+				fmt.Sprintf("Ошибка в строке %d: некорректное количество (%q). Используйте положительное число.", i+1, qtyStr)))
+			return
+		}
+
+		// 5) приёмка на склад. Цена нам в файле не задана — ставим 0, это чисто количественная корректировка.
+		if err := b.inventory.ReceiveWithCost(ctx, u.ID, warehouseID, matID, qty, 0, "supply_excel"); err != nil {
+			b.send(tgbotapi.NewMessage(chatID,
+				fmt.Sprintf("Ошибка приёмки в строке %d (материал %d): %v", i+1, matID, err)))
+			return
+		}
+
+		totalRows++
+		totalQty += qty
+	}
+
+	if warehouseName == "" {
+		warehouseName = fmt.Sprintf("ID %d", warehouseID)
+	}
+
+	// 6) успех: возвращаем в меню поставок
+	msg := fmt.Sprintf(
+		"Поступление из файла проведено.\nСклад: %s\nСтрок обработано: %d\nВсего количества: %.2f",
+		warehouseName, totalRows, totalQty,
+	)
+	b.send(tgbotapi.NewMessage(chatID, msg))
+
+	_ = b.states.Set(ctx, chatID, dialog.StateSupMenu, dialog.Payload{})
+	b.showSuppliesMenu(chatID, nil)
+}
 
 func navKeyboard(back bool, cancel bool) tgbotapi.InlineKeyboardMarkup {
 	row := []tgbotapi.InlineKeyboardButton{}
@@ -1647,6 +1777,32 @@ func (b *Bot) onMessage(ctx context.Context, upd tgbotapi.Update) {
 		// Переходим в корзину
 		_ = b.states.Set(ctx, chatID, dialog.StateSupCart, st.Payload)
 		b.showSuppliesCart(ctx, chatID, nil, whID, items)
+		return
+
+	case dialog.StateSupImportFile:
+		// ждём документ Excel
+		if msg.Document == nil {
+			b.send(tgbotapi.NewMessage(chatID,
+				"Пожалуйста, отправьте Excel-файл (.xlsx) с поступлением, который был выгружен через «Выгрузить материалы» и в котором заполнена колонка «Количество»."))
+			return
+		}
+
+		// ищем пользователя
+		u, err := b.users.GetByTelegramID(ctx, msg.From.ID)
+		if err != nil || u == nil {
+			b.send(tgbotapi.NewMessage(chatID, "Пользователь не найден или нет доступа."))
+			return
+		}
+
+		// скачиваем файл из Telegram
+		data, err := b.downloadTelegramFile(msg.Document.FileID)
+		if err != nil {
+			b.send(tgbotapi.NewMessage(chatID, "Не удалось скачать файл из Telegram: "+err.Error()))
+			return
+		}
+
+		// обрабатываем Excel
+		b.handleSuppliesImportExcel(ctx, chatID, u, data)
 		return
 
 	case dialog.StateConsQty:
