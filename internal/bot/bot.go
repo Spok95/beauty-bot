@@ -1,6 +1,7 @@
 package bot
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -18,6 +19,7 @@ import (
 	"github.com/Spok95/beauty-bot/internal/dialog"
 	"github.com/Spok95/beauty-bot/internal/domain/catalog"
 	"github.com/Spok95/beauty-bot/internal/domain/users"
+	"github.com/xuri/excelize/v2"
 )
 
 const lowStockThresholdGr = 20.0
@@ -516,11 +518,15 @@ func (b *Bot) showStockItem(ctx context.Context, chatID int64, editMsgID int, wh
 func (b *Bot) showSuppliesMenu(chatID int64, editMsgID *int) {
 	kb := tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("➕ Приёмка", "sup:add"),
+			tgbotapi.NewInlineKeyboardButtonData("⬇️ Выгрузить материалы", "sup:export"),
+			tgbotapi.NewInlineKeyboardButtonData("⬆️ Загрузить поступление", "sup:import"),
+		),
+		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData("📄 Журнал", "sup:list"),
 		),
 		navKeyboard(false, true).InlineKeyboard[0],
 	)
+
 	if editMsgID != nil {
 		b.send(tgbotapi.NewEditMessageTextAndMarkup(chatID, *editMsgID, "Поставки — выберите действие", kb))
 	} else {
@@ -548,6 +554,39 @@ func (b *Bot) showSuppliesPickWarehouse(ctx context.Context, chatID int64, editM
 	rows = append(rows, navKeyboard(true, true).InlineKeyboard[0])
 	kb := tgbotapi.NewInlineKeyboardMarkup(rows...)
 	b.send(tgbotapi.NewEditMessageTextAndMarkup(chatID, *editMsgID, "Выберите склад:", kb))
+}
+
+func (b *Bot) showSuppliesExportPickWarehouse(ctx context.Context, chatID int64, editMsgID *int) {
+	ws, err := b.catalog.ListWarehouses(ctx)
+	if err != nil {
+		if editMsgID != nil {
+			b.editTextAndClear(chatID, *editMsgID, "Ошибка загрузки складов")
+		} else {
+			b.send(tgbotapi.NewMessage(chatID, "Ошибка загрузки складов"))
+		}
+		return
+	}
+
+	rows := [][]tgbotapi.InlineKeyboardButton{}
+	for _, w := range ws {
+		if !w.Active {
+			continue
+		}
+		rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(w.Name, fmt.Sprintf("sup:expwh:%d", w.ID)),
+		))
+	}
+	rows = append(rows, navKeyboard(true, true).InlineKeyboard[0])
+	kb := tgbotapi.NewInlineKeyboardMarkup(rows...)
+
+	text := "Выберите склад для выгрузки материалов:"
+	if editMsgID != nil {
+		b.send(tgbotapi.NewEditMessageTextAndMarkup(chatID, *editMsgID, text, kb))
+	} else {
+		msg := tgbotapi.NewMessage(chatID, text)
+		msg.ReplyMarkup = kb
+		b.send(msg)
+	}
 }
 
 func (b *Bot) showSuppliesPickMaterial(ctx context.Context, chatID int64, editMsgID int) {
@@ -583,6 +622,113 @@ func (b *Bot) parseSupItems(v any) []map[string]any {
 		}
 	}
 	return items
+}
+
+func (b *Bot) exportWarehouseMaterialsExcel(ctx context.Context, chatID int64, msgID int, whID int64) {
+	// 1) склад
+	wh, err := b.catalog.GetWarehouseByID(ctx, whID)
+	if err != nil || wh == nil {
+		b.editTextAndClear(chatID, msgID, "Склад не найден")
+		return
+	}
+
+	// 2) материалы с балансами по складу
+	mats, err := b.materials.ListWithBalanceByWarehouse(ctx, whID)
+	if err != nil {
+		b.editTextAndClear(chatID, msgID, "Ошибка загрузки материалов")
+		return
+	}
+	if len(mats) == 0 {
+		b.editTextAndClear(chatID, msgID, "На этом складе нет материалов")
+		return
+	}
+
+	// 3) категории
+	cats, err := b.catalog.ListCategories(ctx)
+	if err != nil {
+		b.editTextAndClear(chatID, msgID, "Ошибка загрузки категорий")
+		return
+	}
+	catNames := make(map[int64]string, len(cats))
+	for _, c := range cats {
+		catNames[c.ID] = c.Name
+	}
+
+	// 4) Excel
+	f := excelize.NewFile()
+	defer func() { _ = f.Close() }()
+
+	sheet := f.GetSheetName(f.GetActiveSheetIndex())
+
+	// Заголовок
+	header := []interface{}{
+		"warehouse_id",
+		"warehouse_name",
+		"category_id",
+		"category_name",
+		"material_id",
+		"material_name",
+		"unit",
+		"Количество", // эту колонку админ будет заполнять сам
+	}
+	if err := f.SetSheetRow(sheet, "A1", &header); err != nil {
+		b.editTextAndClear(chatID, msgID, "Ошибка формирования файла (заголовок)")
+		return
+	}
+
+	// Данные
+	row := 2
+	for _, m := range mats {
+		catName := catNames[m.CategoryID]
+		excelRow := []interface{}{
+			wh.ID,
+			wh.Name,
+			m.CategoryID,
+			catName,
+			m.ID,
+			m.Name,
+			string(m.Unit),
+			"", // Количество — пусто
+		}
+		cell, err := excelize.CoordinatesToCellName(1, row)
+		if err != nil {
+			b.editTextAndClear(chatID, msgID, "Ошибка формирования файла (ячейки)")
+			return
+		}
+		if err := f.SetSheetRow(sheet, cell, &excelRow); err != nil {
+			b.editTextAndClear(chatID, msgID, "Ошибка формирования файла (строки)")
+			return
+		}
+		row++
+	}
+
+	// 5) Пишем в буфер
+	buf := &bytes.Buffer{}
+	if err := f.Write(buf); err != nil {
+		b.editTextAndClear(chatID, msgID, "Ошибка записи файла")
+		return
+	}
+
+	// 6) Отправляем документ в Telegram
+	fileName := fmt.Sprintf("materials_%s_%s.xlsx",
+		wh.Name,
+		time.Now().Format("20060102_150405"),
+	)
+
+	doc := tgbotapi.NewDocument(chatID, tgbotapi.FileBytes{
+		Name:  fileName,
+		Bytes: buf.Bytes(),
+	})
+	doc.Caption = fmt.Sprintf(
+		"Материалы склада «%s».\nЗаполните колонку «Количество» и загрузите файл через кнопку «Загрузить поступление».",
+		wh.Name,
+	)
+
+	b.send(doc)
+
+	// Обновим текст исходного сообщения
+	b.editTextWithNav(chatID, msgID,
+		fmt.Sprintf("Сформирован файл с материалами для склада «%s».", wh.Name))
 }
 
 // showSuppliesCart Показ корзины поставки: список позиций и итог
@@ -2364,7 +2510,23 @@ func (b *Bot) onCallback(ctx context.Context, upd tgbotapi.Update) {
 		_ = b.answerCallback(cb, "Ок", false)
 		return
 
-		// Поставки
+		// Поставки: выгрузка / загрузка / журнал
+	case data == "sup:export":
+		b.clearPrevStep(ctx, fromChat)
+
+		_ = b.states.Set(ctx, fromChat, dialog.StateSupExportPickWh, dialog.Payload{})
+		b.showSuppliesExportPickWarehouse(ctx, fromChat, &cb.Message.MessageID)
+		_ = b.answerCallback(cb, "Ок", false)
+		return
+
+	case data == "sup:import":
+		// пока только ставим состояние и объясняем, что ждём файл
+		_ = b.states.Set(ctx, fromChat, dialog.StateSupImportFile, dialog.Payload{})
+		b.editTextWithNav(fromChat, cb.Message.MessageID,
+			"Загрузите файл Excel с поступлением (тот, что вы выгрузили через «Выгрузить материалы» и заполнили колонку «Количество»).")
+		_ = b.answerCallback(cb, "Ок", false)
+		return
+
 	case data == "sup:add":
 		b.clearPrevStep(ctx, fromChat)
 
@@ -2387,6 +2549,12 @@ func (b *Bot) onCallback(ctx context.Context, upd tgbotapi.Update) {
 		_ = b.states.Set(ctx, fromChat, dialog.StateSupPickMat, dialog.Payload{"wh_id": whID})
 		b.showSuppliesPickMaterial(ctx, fromChat, cb.Message.MessageID)
 		_ = b.answerCallback(cb, "Ок", false)
+		return
+
+	case strings.HasPrefix(data, "sup:expwh:"):
+		whID, _ := strconv.ParseInt(strings.TrimPrefix(data, "sup:expwh:"), 10, 64)
+		b.exportWarehouseMaterialsExcel(ctx, fromChat, cb.Message.MessageID, whID)
+		_ = b.answerCallback(cb, "Файл сформирован", false)
 		return
 
 	case strings.HasPrefix(data, "sup:mat:"):
