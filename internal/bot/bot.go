@@ -239,10 +239,7 @@ func (b *Bot) handleStocksImportExcel(ctx context.Context, chatID int64, u *user
 				return
 			}
 			totalOut += -delta
-		} else {
-			// уже совпадает, ничего не делаем
 		}
-
 		totalRows++
 	}
 
