@@ -654,6 +654,71 @@ func (b *Bot) consParseItems(v any) []map[string]any {
 	return out
 }
 
+// rentPartMeta — «кусок» сессии: либо по конкретному абонементу, либо без абонемента.
+type rentPartMeta struct {
+	WithSub   bool  // true — часть по абонементу, false — без абонемента
+	Qty       int   // сколько часов/дней в этой части
+	SubID     int64 // 0 — нет абонемента (часть без абонемента)
+	PlanLimit int   // номинальный лимит плана (30, 50, ...) — для текста и выбора тарифа
+}
+
+// splitQtyBySubscriptions делит qty по активным абонементам (FIFO), остаток — без абонемента.
+// Использует новую модель: несколько абонементов за месяц, поле PlanLimit, ListActiveByPlaceUnitMonth.
+func (b *Bot) splitQtyBySubscriptions(
+	ctx context.Context,
+	userID int64,
+	place, unit string,
+	qty int,
+) ([]rentPartMeta, error) {
+	metas := make([]rentPartMeta, 0, 3)
+
+	if qty <= 0 {
+		return metas, nil
+	}
+
+	remaining := qty
+
+	// 1) части по абонементам (если есть)
+	if b.subs != nil {
+		month := time.Now().Format("2006-01")
+		subs, err := b.subs.ListActiveByPlaceUnitMonth(ctx, userID, place, unit, month)
+		if err == nil {
+			for _, s := range subs {
+				left := s.TotalQty - s.UsedQty
+				if left <= 0 {
+					continue
+				}
+				if remaining <= 0 {
+					break
+				}
+				use := remaining
+				if left < use {
+					use = left
+				}
+				metas = append(metas, rentPartMeta{
+					WithSub:   true,
+					Qty:       use,
+					SubID:     s.ID,
+					PlanLimit: s.PlanLimit,
+				})
+				remaining -= use
+			}
+		}
+	}
+
+	// 2) то, что не покрыто абонементами — часть без абонемента
+	if remaining > 0 {
+		metas = append(metas, rentPartMeta{
+			WithSub:   false,
+			Qty:       remaining,
+			SubID:     0,
+			PlanLimit: 0,
+		})
+	}
+
+	return metas, nil
+}
+
 func (b *Bot) showConsCart(ctx context.Context, chatID int64, editMsgID *int, place, unit string, qty int, items []map[string]any) {
 	lines := []string{fmt.Sprintf("Расход/Аренда: %s, %d %s", map[string]string{"hall": "Зал", "cabinet": "Кабинет"}[place], qty, map[string]string{"hour": "ч", "day": "дн"}[unit])}
 	var sum float64
@@ -2448,37 +2513,51 @@ func (b *Bot) onCallback(ctx context.Context, upd tgbotapi.Update) {
 			mats += float64(q) * price
 		}
 
-		// 2) авто-детект абонемента
+		// 2) разрезаем сессию на части: старые абонементы / новые / без абонемента
+		u, _ := b.users.GetByTelegramID(ctx, cb.From.ID)
+		var metas []rentPartMeta
+		if u != nil {
+			metas, _ = b.splitQtyBySubscriptions(ctx, u.ID, place, unit, qty)
+		}
+		if len(metas) == 0 {
+			// на всякий случай — считаем всё без абонемента
+			metas = []rentPartMeta{{
+				WithSub:   false,
+				Qty:       qty,
+				SubID:     0,
+				PlanLimit: 0,
+			}}
+		}
+
+		// есть ли вообще части по абонементу
 		withSub := false
-		var subLeft *int // для показа остатка
-		subLimitForPricing := qty
-
-		if u, _ := b.users.GetByTelegramID(ctx, cb.From.ID); u != nil {
-			month := time.Now().Format("2006-01")
-			if s, err := b.subs.GetActive(ctx, u.ID, place, unit, month); err == nil && s != nil {
-				leftBefore := s.TotalQty - s.UsedQty
-				if leftBefore < 0 {
-					leftBefore = 0
-				}
-
-				if leftBefore >= qty {
-					// абонемента хватает
-					withSub = true
-					leftAfter := leftBefore - qty
-					subLeft = &leftAfter
-					subLimitForPricing = s.PlanLimit
-				} else if leftBefore > 0 && leftBefore < qty {
-					// на сессию не хватает → считаем без абонемента, но остаток покажем
-					withSub = false
-					subLeft = &leftBefore
-					subLimitForPricing = qty
-				}
+		for _, m := range metas {
+			if m.WithSub {
+				withSub = true
+				break
 			}
 		}
 
-		// 3) расчёт по ступеням
-		rent, tariff, rounded, need, _, err := b.cons.ComputeRent(ctx, place, unit, withSub, qty, mats, subLimitForPricing)
-		if err != nil {
+		// подготовим части для биллинга
+		parts := make([]consumption.RentSplitPartInput, 0, len(metas))
+		for _, m := range metas {
+			p := consumption.RentSplitPartInput{
+				WithSub: m.WithSub,
+				Qty:     m.Qty,
+			}
+			if m.WithSub && m.PlanLimit > 0 {
+				// тариф по лимиту плана (30, 50, ...)
+				p.SubLimitForPricing = m.PlanLimit
+			} else {
+				// без абонемента тариф по самому куску
+				p.SubLimitForPricing = m.Qty
+			}
+			parts = append(parts, p)
+		}
+
+		// 3) расчёт по ступеням для всех частей
+		rent, rounded, needTotal, partResults, err := b.cons.ComputeRentSplit(ctx, place, unit, mats, parts)
+		if err != nil || len(partResults) == 0 {
 			b.send(tgbotapi.NewMessage(fromChat,
 				fmt.Sprintf("⚠️ Нет активных тарифов для: %s / %s (%s). Настройте тарифы.",
 					map[string]string{"hall": "Зал", "cabinet": "Кабинет"}[place],
@@ -2493,93 +2572,98 @@ func (b *Bot) onCallback(ctx context.Context, upd tgbotapi.Update) {
 		st.Payload["with_sub"] = withSub
 		st.Payload["mats_sum"] = mats
 		st.Payload["mats_rounded"] = rounded
-		st.Payload["need"] = need
+		st.Payload["need_total"] = needTotal
 		st.Payload["rent"] = rent
 		st.Payload["total"] = total
-		if subLeft != nil {
-			st.Payload["sub_left"] = float64(*subLeft)
-		} else {
-			delete(st.Payload, "sub_left")
-		}
 
+		// детальная разбивка (для прозрачности и на будущее, плюс для confirm)
+		partsPayload := make([]map[string]any, 0, len(partResults))
+		for i, pr := range partResults {
+			m := metas[i]
+			mp := map[string]any{
+				"with_sub":       m.WithSub,
+				"qty":            m.Qty,
+				"rent":           pr.Rent,
+				"tariff":         pr.Tariff,
+				"need":           pr.Need,
+				"materials_used": pr.MaterialsUsed,
+				"threshold_met":  pr.ThresholdMet,
+			}
+			if m.WithSub {
+				mp["sub_id"] = m.SubID
+				mp["plan_limit"] = m.PlanLimit
+			}
+			partsPayload = append(partsPayload, mp)
+		}
+		st.Payload["rent_parts"] = partsPayload
 		_ = b.states.Set(ctx, fromChat, dialog.StateConsSummary, st.Payload)
 
-		// 5) вывод сводки
+		// 5) вывод сводки с детализацией по частям
+		placeRU := map[string]string{"hall": "Зал", "cabinet": "Кабинет"}
+		unitRU := map[string]string{"hour": "ч", "day": "дн"}
 
-		subBadge := ""
-		if withSub {
-			subBadge = " (с абонементом)"
+		lines := []string{
+			fmt.Sprintf("Сводка затрат для оплаты%s:", map[bool]string{true: " (с абонементом)", false: ""}[withSub]),
+			fmt.Sprintf("Помещение: %s", placeRU[place]),
+			fmt.Sprintf("Кол-во: %d %s", qty, unitRU[unit]),
+			fmt.Sprintf("Материалы: %.2f ₽ (для порогов округлено до %.2f ₽)", mats, rounded),
+			"",
+			"Аренда по частям:",
 		}
 
-		// строка про абонемент под сводкой
-		subLine := ""
-		var subLeftInt *int
-		if v, ok := st.Payload["sub_left"].(float64); ok {
-			left := int(v)
-			subLeftInt = &left
-			if withSub {
-				subLine = fmt.Sprintf("\nОстаток абонемента: %d %s",
-					left, map[string]string{"hour": "часов", "day": "дней"}[unit])
-			} else if left > 0 {
-				subLine = fmt.Sprintf("\nАбонемент: остаток %d %s (на эту сессию не хватает, расчёт без абонемента).",
-					left, map[string]string{"hour": "часов", "day": "дней"}[unit])
+		var subQty, noSubQty int
+
+		for i, pr := range partResults {
+			m := metas[i]
+
+			var price float64
+			if pr.ThresholdMet {
+				price = pr.Rate.PriceWith
+			} else {
+				price = pr.Rate.PriceOwn
 			}
+
+			label := "без абонемента"
+			if m.WithSub {
+				label = fmt.Sprintf("по абонементу на %d %s", m.PlanLimit, unitRU[unit])
+				subQty += m.Qty
+			} else {
+				noSubQty += m.Qty
+			}
+
+			cond := "условие по материалам не выполнено"
+			if pr.ThresholdMet {
+				cond = "условие по материалам выполнено"
+			}
+
+			lines = append(lines,
+				fmt.Sprintf(
+					"• %d %s %s: %.2f ₽ (%.2f ₽ за единицу, %s; порог %.0f ₽, в зачёт пошло %.0f ₽)",
+					m.Qty, unitRU[unit], label,
+					pr.Rent, price, cond, pr.Need, pr.MaterialsUsed,
+				),
+			)
 		}
 
-		// предупреждение перед сводкой — только если есть абонемент, но часов на сессию не хватает
+		lines = append(lines, "")
+		lines = append(lines, fmt.Sprintf("Аренда всего: %.2f ₽", rent))
+		lines = append(lines, fmt.Sprintf("Итого к оплате: %.2f ₽", total))
+
+		// предупреждение, если часть часов ушла без абонемента
 		warn := ""
-		if !withSub && subLeftInt != nil && *subLeftInt > 0 && *subLeftInt < qty {
-			left := *subLeftInt
-
-			// гипотетическая аренда, если бы вся эта сессия прошла по абонементу
-			var rentWithSubHypo float64
-			if u, _ := b.users.GetByTelegramID(ctx, cb.From.ID); u != nil {
-				month := time.Now().Format("2006-01")
-				if s, err := b.subs.GetActive(ctx, u.ID, place, unit, month); err == nil && s != nil {
-					if r2, _, _, _, _, err2 := b.cons.ComputeRent(ctx, place, unit, true, qty, mats, s.PlanLimit); err2 == nil {
-						rentWithSubHypo = r2
-					}
-				}
-			}
-
+		if withSub && noSubQty > 0 {
 			warn = fmt.Sprintf(
-				"⚠️ Обратите внимание: в абонементе осталось %d %s, вы указали %d %s.\n"+
-					"На текущую сессию абонемента не хватает, поэтому при подтверждении она будет целиком посчитана по тарифу без абонемента: аренда %.2f ₽.\n",
-				left, map[string]string{"hour": "часов", "day": "дней"}[unit],
-				qty, map[string]string{"hour": "часов", "day": "дней"}[unit],
-				rent,
-			)
-
-			if rentWithSubHypo > 0 {
-				warn += fmt.Sprintf(
-					"Если бы вся сессия считалась по абонементу, аренда составила бы %.2f ₽.\n",
-					rentWithSubHypo,
-				)
-			}
-
-			warn += "Вы можете:\n" +
-				"• изменить количество до %d %s и сначала израсходовать остаток абонемента;\n" +
-				"• купить новый абонемент и затем учитывать новые часы по нему;\n" +
-				"• подтвердить текущую сводку и оплатить по тарифу без абонемента."
-			warn = fmt.Sprintf(
-				warn,
-				left, map[string]string{"hour": "часов", "day": "дней"}[unit],
+				"⚠️ Обратите внимание: абонемента хватает на %d %s, ещё %d %s считаются по тарифу без абонемента.\n\n"+
+					"Вы можете:\n"+
+					"• вернуться и сначала купить новый абонемент, затем ещё раз посчитать;\n"+
+					"• подтвердить текущую сводку и оплатить как есть.",
+				subQty, unitRU[unit], noSubQty, unitRU[unit],
 			)
 		}
 
-		// основной текст сводки
-		mainTxt := fmt.Sprintf(
-			"Сводка затрат для оплаты%s:\nПомещение: %s\nКол-во: %d %s\nМатериалы: %.2f ₽ (для порога учтено %.0f ₽; порог %.0f ₽)\nАренда: %.2f ₽ (%s)\nИтого к оплате: %.2f ₽%s",
-			subBadge,
-			map[string]string{"hall": "Зал", "cabinet": "Кабинет"}[place],
-			qty, map[string]string{"hour": "ч", "day": "дн"}[unit],
-			mats, rounded, need,
-			rent, tariff, total, subLine,
-		)
-
-		txt := mainTxt
+		txt := strings.Join(lines, "\n")
 		if warn != "" {
-			txt = warn + "\n\n" + mainTxt
+			txt = warn + "\n\n" + txt
 		}
 
 		// клавиатура
@@ -2589,23 +2673,16 @@ func (b *Bot) onCallback(ctx context.Context, upd tgbotapi.Update) {
 			),
 		}
 		if warn != "" {
-			rows = append(rows,
-				tgbotapi.NewInlineKeyboardRow(
-					tgbotapi.NewInlineKeyboardButtonData("✏️ Изменить", "cons:edit"),
-					tgbotapi.NewInlineKeyboardButtonData("🧾 Купить абонемент", "cons:buy_sub"),
-				),
-			)
-		} else {
-			rows = append(rows,
-				tgbotapi.NewInlineKeyboardRow(
-					tgbotapi.NewInlineKeyboardButtonData("✏️ Изменить", "cons:edit"),
-				),
-			)
+			// даём сразу кнопки покупки абонемента по помещению
+			rows = append(rows, b.subBuyPlaceKeyboard().InlineKeyboard[0])
 		}
+		// навигация назад / в меню
 		rows = append(rows, navKeyboard(true, true).InlineKeyboard[0])
 
 		kb := tgbotapi.NewInlineKeyboardMarkup(rows...)
-		b.send(tgbotapi.NewEditMessageTextAndMarkup(fromChat, cb.Message.MessageID, txt, kb))
+		b.editTextWithNav(fromChat, cb.Message.MessageID, txt)
+		msg := tgbotapi.NewEditMessageReplyMarkup(fromChat, cb.Message.MessageID, kb)
+		b.send(msg)
 		_ = b.answerCallback(cb, "Ок", false)
 		return
 
@@ -2693,46 +2770,36 @@ func (b *Bot) onCallback(ctx context.Context, upd tgbotapi.Update) {
 		}
 		// Учёт абонемента: спишем использованное количество (часы/дни) за текущий месяц
 		if withSub && b.subs != nil {
+			// разбиваем сессию на части по тем же правилам (старые/новые абонементы + без абонемента)
+			metas, _ := b.splitQtyBySubscriptions(ctx, u.ID, place, unit, qty)
 			month := time.Now().Format("2006-01")
-			s, err := b.subs.GetActive(ctx, u.ID, place, unit, month)
-			if err != nil || s == nil {
-				// подсветим админу, что абонемента нет, хотя флаг стоит
-				if b.adminChat != 0 {
-					b.send(tgbotapi.NewMessage(b.adminChat,
-						fmt.Sprintf("ℹ️ У мастера id %d нет абонемента на %s/%s (%s), но сессия проведена с флагом абонемента.",
-							u.ID,
-							map[string]string{"hall": "Зал", "cabinet": "Кабинет"}[place],
-							map[string]string{"hour": "час", "day": "день"}[unit],
-							month,
-						)))
-				}
-			} else {
-				// остаток ДО списания
-				leftBefore := s.TotalQty - s.UsedQty
-				if leftBefore < 0 {
-					leftBefore = 0
+
+			for _, m := range metas {
+				if !m.WithSub || m.SubID == 0 || m.Qty <= 0 {
+					continue
 				}
 
-				if err := b.subs.AddUsage(ctx, s.ID, qty); err != nil {
+				if err := b.subs.AddUsage(ctx, m.SubID, m.Qty); err != nil {
 					if errors.Is(err, subsdomain.ErrInsufficientLimit) && b.adminChat != 0 {
+						// сигнал админу, что по конкретному абонементу лимит уже выбит
 						b.send(tgbotapi.NewMessage(b.adminChat,
-							fmt.Sprintf("⚠️ Не удалось списать %d %s абонемента для мастера id %d: недостаточно лимита.",
-								qty,
+							fmt.Sprintf("⚠️ Не удалось списать %d %s абонемента (id=%d) для мастера id %d: недостаточно лимита.",
+								m.Qty,
 								map[string]string{"hour": "часов", "day": "дней"}[unit],
+								m.SubID,
 								u.ID,
 							)))
 					}
-				} else {
-					// если после списания абонемент исчерпан — предложим купить новый
-					leftAfter := leftBefore - qty
-					if leftAfter <= 0 {
-						// информационное сообщение мастеру
-						msg := tgbotapi.NewMessage(fromChat,
-							"Абонемент по этому помещению полностью использован.\nХотите приобрести новый абонемент?")
-						msg.ReplyMarkup = b.subBuyPlaceKeyboard()
-						b.send(msg)
-					}
 				}
+			}
+
+			// после списаний проверим, есть ли ещё активные абонементы по этому месту/единице
+			if subsAfter, err := b.subs.ListActiveByPlaceUnitMonth(ctx, u.ID, place, unit, month); err == nil && len(subsAfter) == 0 {
+				// всё по этому помещению выработано — предложим купить новый абонемент
+				msg := tgbotapi.NewMessage(fromChat,
+					"Абонемент по этому помещению полностью использован.\nХотите приобрести новый абонемент?")
+				msg.ReplyMarkup = b.subBuyPlaceKeyboard()
+				b.send(msg)
 			}
 		}
 
