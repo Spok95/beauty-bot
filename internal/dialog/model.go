@@ -91,6 +91,10 @@ const (
 	StatePriceMatMenu         State = "price_mat_menu"
 	StatePriceMatExportPickWh State = "price_mat_export_wh"
 	StatePriceMatImportFile   State = "price_mat_import_file"
+
+	// Тарифы аренды
+	StatePriceRentMenu       State = "price_rent_menu"
+	StatePriceRentImportFile State = "price_rent_import_file"
 )
 
 type Payload map[string]any

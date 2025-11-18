@@ -350,6 +350,68 @@ func (r *Repo) ComputeRent(
 	return totalRent, p.Tariff, rounded, totalNeed, p.Rate, nil
 }
 
+// ListRentRates возвращает все тарифы аренды из rent_rates.
+func (r *Repo) ListRentRates(ctx context.Context) ([]RentRate, error) {
+	const q = `
+SELECT
+    id,
+    place,
+    unit,
+    with_subscription,
+    min_qty,
+    threshold_materials,
+    price_with_materials,
+    price_own_materials
+FROM rent_rates
+ORDER BY id;
+`
+
+	rows, err := r.pool.Query(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var res []RentRate
+	for rows.Next() {
+		var rr RentRate
+		if err := rows.Scan(
+			&rr.ID,
+			&rr.Place,
+			&rr.Unit,
+			&rr.WithSub,
+			&rr.MinQty,
+			&rr.Threshold,
+			&rr.PriceWith,
+			&rr.PriceOwn,
+		); err != nil {
+			return nil, err
+		}
+		res = append(res, rr)
+	}
+	return res, rows.Err()
+}
+
+// UpdateRentRatePartial обновляет threshold/price_with/price_own для тарифа.
+// Если какое-то значение равно nil, оно не трогается.
+func (r *Repo) UpdateRentRatePartial(
+	ctx context.Context,
+	id int64,
+	threshold, priceWith, priceOwn *float64,
+) error {
+	const q = `
+UPDATE rent_rates
+SET
+    threshold_materials   = COALESCE($2, threshold_materials),
+    price_with_materials  = COALESCE($3, price_with_materials),
+    price_own_materials   = COALESCE($4, price_own_materials)
+WHERE id = $1;
+`
+
+	_, err := r.pool.Exec(ctx, q, id, threshold, priceWith, priceOwn)
+	return err
+}
+
 func roundTo10(x float64) float64 {
 	// до ближайшего десятка
 	return float64(int((x+5)/10) * 10)
