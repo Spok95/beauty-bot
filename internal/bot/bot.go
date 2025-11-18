@@ -357,6 +357,120 @@ func (b *Bot) handleSuppliesImportExcel(ctx context.Context, chatID int64, u *us
 	b.showSuppliesMenu(chatID, nil)
 }
 
+// handlePriceMatImportExcel читает Excel-файл с ценами материалов и
+// обновляет price_per_unit для указанных материалов.
+// Пустая ячейка price_per_unit означает "оставить старую цену".
+func (b *Bot) handlePriceMatImportExcel(ctx context.Context, chatID int64, u *users.User, data []byte) {
+	f, err := excelize.OpenReader(bytes.NewReader(data))
+	if err != nil {
+		b.send(tgbotapi.NewMessage(chatID, "Не удалось прочитать Excel-файл (повреждён или не .xlsx)."))
+		return
+	}
+	defer func() { _ = f.Close() }()
+
+	sheet := f.GetSheetName(f.GetActiveSheetIndex())
+	rows, err := f.GetRows(sheet)
+	if err != nil || len(rows) < 2 {
+		b.send(tgbotapi.NewMessage(chatID, "Файл не содержит данных (нет строк с материалами)."))
+		return
+	}
+
+	header := rows[0]
+	if len(header) < 8 {
+		b.send(tgbotapi.NewMessage(chatID, "Некорректный формат файла: ожидается минимум 8 колонок (warehouse_id ... price_per_unit)."))
+		return
+	}
+
+	var (
+		totalRows     int
+		updatedCount  int
+		warehouseID   int64
+		warehouseName string
+	)
+
+	if len(rows[1]) >= 2 {
+		whIDStr := strings.TrimSpace(rows[1][0])
+		if whIDStr != "" {
+			if id, err := strconv.ParseInt(whIDStr, 10, 64); err == nil {
+				warehouseID = id
+			}
+		}
+		warehouseName = strings.TrimSpace(rows[1][1])
+	}
+	if warehouseID == 0 {
+		b.send(tgbotapi.NewMessage(chatID, "Не удалось определить склад (проверьте колонку warehouse_id в файле)."))
+		return
+	}
+	if warehouseName == "" {
+		warehouseName = fmt.Sprintf("ID %d", warehouseID)
+	}
+
+	for i := 1; i < len(rows); i++ {
+		row := rows[i]
+		if len(row) < 8 {
+			continue
+		}
+
+		whIDStr := strings.TrimSpace(row[0])
+		matIDStr := strings.TrimSpace(row[4])
+		priceStr := strings.TrimSpace(row[7]) // price_per_unit
+
+		if whIDStr == "" || matIDStr == "" {
+			continue
+		}
+
+		whID, err := strconv.ParseInt(whIDStr, 10, 64)
+		if err != nil {
+			b.send(tgbotapi.NewMessage(chatID,
+				fmt.Sprintf("Ошибка в строке %d: некорректный warehouse_id (%q).", i+1, whIDStr)))
+			return
+		}
+		if whID != warehouseID {
+			b.send(tgbotapi.NewMessage(chatID,
+				fmt.Sprintf("Ошибка в строке %d: в файле обнаружен другой склад (warehouse_id %d).", i+1, whID)))
+			return
+		}
+
+		matID, err := strconv.ParseInt(matIDStr, 10, 64)
+		if err != nil {
+			b.send(tgbotapi.NewMessage(chatID,
+				fmt.Sprintf("Ошибка в строке %d: некорректный material_id (%q).", i+1, matIDStr)))
+			return
+		}
+
+		if priceStr == "" {
+			// пустая ячейка — оставляем старую цену
+			totalRows++
+			continue
+		}
+
+		price, err := strconv.ParseFloat(strings.ReplaceAll(priceStr, ",", "."), 64)
+		if err != nil || price < 0 {
+			b.send(tgbotapi.NewMessage(chatID,
+				fmt.Sprintf("Ошибка в строке %d: некорректный price_per_unit (%q). Используйте неотрицательное число.", i+1, priceStr)))
+			return
+		}
+
+		if _, err := b.materials.UpdatePrice(ctx, matID, price); err != nil {
+			b.send(tgbotapi.NewMessage(chatID,
+				fmt.Sprintf("Ошибка обновления цены в строке %d (материал %d): %v", i+1, matID, err)))
+			return
+		}
+
+		totalRows++
+		updatedCount++
+	}
+
+	msg := fmt.Sprintf(
+		"Цены материалов склада «%s» обновлены из файла.\nСтрок обработано: %d\nМатериалов с обновлённой ценой: %d",
+		warehouseName, totalRows, updatedCount,
+	)
+	b.send(tgbotapi.NewMessage(chatID, msg))
+
+	_ = b.states.Set(ctx, chatID, dialog.StatePriceMatMenu, dialog.Payload{})
+	b.showPriceMatMenu(chatID, nil)
+}
+
 func navKeyboard(back bool, cancel bool) tgbotapi.InlineKeyboardMarkup {
 	row := []tgbotapi.InlineKeyboardButton{}
 	if back {
@@ -417,11 +531,11 @@ func adminReplyKeyboard() tgbotapi.ReplyKeyboardMarkup {
 	return tgbotapi.ReplyKeyboardMarkup{
 		ResizeKeyboard: true,
 		Keyboard: [][]tgbotapi.KeyboardButton{
-			{tgbotapi.NewKeyboardButton("Склады"), tgbotapi.NewKeyboardButton("Категории")},
-			{tgbotapi.NewKeyboardButton("Материалы")},
+			{tgbotapi.NewKeyboardButton("Склады")},
+			{tgbotapi.NewKeyboardButton("Категории"), tgbotapi.NewKeyboardButton("Материалы")},
 			{tgbotapi.NewKeyboardButton("Остатки"), tgbotapi.NewKeyboardButton("Поставки")},
-			{tgbotapi.NewKeyboardButton("Абонементы")},
-			{tgbotapi.NewKeyboardButton("Установка тарифов")},
+			{tgbotapi.NewKeyboardButton("Установка цен")},
+			{tgbotapi.NewKeyboardButton("Абонементы"), tgbotapi.NewKeyboardButton("Установка тарифов")},
 			{tgbotapi.NewKeyboardButton("Список команд")},
 		},
 	}
@@ -855,6 +969,27 @@ func (b *Bot) showSuppliesMenu(chatID int64, editMsgID *int) {
 	}
 }
 
+// главное меню "Установка цен"
+func (b *Bot) showPriceMainMenu(chatID int64, editMsgID *int) {
+	kb := tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("Установить цены на материалы на складах", "price:mat:menu"),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("Установить новые тарифы на аренду", "price:rent:menu"),
+		),
+		navKeyboard(false, true).InlineKeyboard[0],
+	)
+
+	if editMsgID != nil {
+		b.send(tgbotapi.NewEditMessageTextAndMarkup(chatID, *editMsgID, "Установка цен — выберите действие", kb))
+	} else {
+		m := tgbotapi.NewMessage(chatID, "Установка цен — выберите действие")
+		m.ReplyMarkup = kb
+		b.send(m)
+	}
+}
+
 func (b *Bot) showSuppliesPickWarehouse(ctx context.Context, chatID int64, editMsgID *int) {
 	ws, err := b.catalog.ListWarehouses(ctx)
 	if err != nil {
@@ -905,6 +1040,61 @@ func (b *Bot) showSuppliesExportPickWarehouse(ctx context.Context, chatID int64,
 		msg := tgbotapi.NewMessage(chatID, text)
 		msg.ReplyMarkup = kb
 		b.send(msg)
+	}
+}
+
+// выбор склада для выгрузки цен материалов
+func (b *Bot) showPriceMatExportPickWarehouse(ctx context.Context, chatID int64, editMsgID *int) {
+	ws, err := b.catalog.ListWarehouses(ctx)
+	if err != nil {
+		if editMsgID != nil {
+			b.editTextAndClear(chatID, *editMsgID, "Ошибка загрузки складов")
+		} else {
+			b.send(tgbotapi.NewMessage(chatID, "Ошибка загрузки складов"))
+		}
+		return
+	}
+
+	rows := [][]tgbotapi.InlineKeyboardButton{}
+	for _, w := range ws {
+		if !w.Active {
+			continue
+		}
+		rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(w.Name, fmt.Sprintf("price:mat:expwh:%d", w.ID)),
+		))
+	}
+	rows = append(rows, navKeyboard(false, true).InlineKeyboard[0])
+
+	kb := tgbotapi.NewInlineKeyboardMarkup(rows...)
+	text := "Выберите склад для выгрузки цен материалов:"
+
+	if editMsgID != nil {
+		b.send(tgbotapi.NewEditMessageTextAndMarkup(chatID, *editMsgID, text, kb))
+	} else {
+		m := tgbotapi.NewMessage(chatID, text)
+		m.ReplyMarkup = kb
+		b.send(m)
+	}
+}
+
+// меню для цен материалов на складах
+func (b *Bot) showPriceMatMenu(chatID int64, editMsgID *int) {
+	kb := tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("⬇️ Выгрузить цены на материалы", "price:mat:export"),
+			tgbotapi.NewInlineKeyboardButtonData("⬆️ Загрузить цены на материалы", "price:mat:import"),
+		),
+		navKeyboard(false, true).InlineKeyboard[0],
+	)
+
+	text := "Цены на материалы — выберите действие"
+	if editMsgID != nil {
+		b.send(tgbotapi.NewEditMessageTextAndMarkup(chatID, *editMsgID, text, kb))
+	} else {
+		m := tgbotapi.NewMessage(chatID, text)
+		m.ReplyMarkup = kb
+		b.send(m)
 	}
 }
 
@@ -1155,6 +1345,112 @@ func (b *Bot) exportWarehouseStocksExcel(ctx context.Context, chatID int64, msgI
 
 	b.editTextWithNav(chatID, msgID,
 		fmt.Sprintf("Сформирован файл с остатками для склада «%s».", wh.Name))
+}
+
+// exportWarehouseMaterialPricesExcel выгружает в Excel цены материалов склада.
+func (b *Bot) exportWarehouseMaterialPricesExcel(ctx context.Context, chatID int64, msgID int, whID int64) {
+	// 1) склад
+	wh, err := b.catalog.GetWarehouseByID(ctx, whID)
+	if err != nil || wh == nil {
+		b.editTextAndClear(chatID, msgID, "Склад не найден")
+		return
+	}
+
+	// 2) материалы по складу
+	items, err := b.materials.ListWithBalanceByWarehouse(ctx, whID)
+	if err != nil {
+		b.editTextAndClear(chatID, msgID, "Ошибка загрузки материалов")
+		return
+	}
+	if len(items) == 0 {
+		b.editTextAndClear(chatID, msgID, "На этом складе нет материалов")
+		return
+	}
+
+	// 3) категории
+	cats, err := b.catalog.ListCategories(ctx)
+	if err != nil {
+		b.editTextAndClear(chatID, msgID, "Ошибка загрузки категорий")
+		return
+	}
+	catNames := make(map[int64]string, len(cats))
+	for _, c := range cats {
+		catNames[c.ID] = c.Name
+	}
+
+	// 4) Excel
+	f := excelize.NewFile()
+	defer func() { _ = f.Close() }()
+
+	sheet := f.GetSheetName(f.GetActiveSheetIndex())
+
+	header := []interface{}{
+		"warehouse_id",
+		"warehouse_name",
+		"category_id",
+		"category_name",
+		"material_id",
+		"material_name",
+		"unit",
+		"price_per_unit",
+	}
+	if err := f.SetSheetRow(sheet, "A1", &header); err != nil {
+		b.editTextAndClear(chatID, msgID, "Ошибка формирования файла (заголовок)")
+		return
+	}
+
+	row := 2
+	for _, it := range items {
+		catName := catNames[it.CategoryID]
+
+		price, _ := b.materials.GetPrice(ctx, it.ID)
+
+		excelRow := []interface{}{
+			wh.ID,
+			wh.Name,
+			it.CategoryID,
+			catName,
+			it.ID,
+			it.Name,
+			string(it.Unit),
+			price,
+		}
+		cell, err := excelize.CoordinatesToCellName(1, row)
+		if err != nil {
+			b.editTextAndClear(chatID, msgID, "Ошибка формирования файла (ячейки)")
+			return
+		}
+		if err := f.SetSheetRow(sheet, cell, &excelRow); err != nil {
+			b.editTextAndClear(chatID, msgID, "Ошибка формирования файла (строки)")
+			return
+		}
+		row++
+	}
+
+	buf := &bytes.Buffer{}
+	if err := f.Write(buf); err != nil {
+		b.editTextAndClear(chatID, msgID, "Ошибка записи файла")
+		return
+	}
+
+	fileName := fmt.Sprintf("prices_%s_%s.xlsx",
+		wh.Name,
+		time.Now().Format("20060102_150405"),
+	)
+
+	doc := tgbotapi.NewDocument(chatID, tgbotapi.FileBytes{
+		Name:  fileName,
+		Bytes: buf.Bytes(),
+	})
+	doc.Caption = fmt.Sprintf(
+		"Цены материалов склада «%s».\nПри необходимости измените колонку price_per_unit и загрузите файл через «Загрузить цены на материалы».",
+		wh.Name,
+	)
+
+	b.send(doc)
+
+	b.editTextWithNav(chatID, msgID,
+		fmt.Sprintf("Сформирован файл с ценами для склада «%s».", wh.Name))
 }
 
 // showSuppliesCart Показ корзины поставки: список позиций и итог
@@ -1747,7 +2043,7 @@ func (b *Bot) onMessage(ctx context.Context, upd tgbotapi.Update) {
 	}
 
 	// Кнопки нижней панели для админа
-	if msg.Text == "Склады" || msg.Text == "Категории" || msg.Text == "Материалы" || msg.Text == "Остатки" || msg.Text == "Поставки" || msg.Text == "Абонементы" {
+	if msg.Text == "Склады" || msg.Text == "Категории" || msg.Text == "Материалы" || msg.Text == "Остатки" || msg.Text == "Поставки" || msg.Text == "Абонементы" || msg.Text == "Установка цен" {
 		u, _ := b.users.GetByTelegramID(ctx, tgID)
 		if u == nil || u.Role != users.RoleAdmin || u.Status != users.StatusApproved {
 			// игнорируем для не-админов
@@ -1775,6 +2071,10 @@ func (b *Bot) onMessage(ctx context.Context, upd tgbotapi.Update) {
 		case "Абонементы":
 			_ = b.states.Set(ctx, chatID, dialog.StateAdmSubsMenu, dialog.Payload{})
 			b.showSubsMenu(chatID, nil)
+			return
+		case "Установка цен":
+			_ = b.states.Set(ctx, chatID, dialog.StatePriceMenu, dialog.Payload{})
+			b.showPriceMainMenu(chatID, nil)
 			return
 		}
 		return
@@ -2122,6 +2422,28 @@ func (b *Bot) onMessage(ctx context.Context, upd tgbotapi.Update) {
 		}
 
 		b.handleStocksImportExcel(ctx, chatID, u, data)
+		return
+
+	case dialog.StatePriceMatImportFile:
+		if msg.Document == nil {
+			b.send(tgbotapi.NewMessage(chatID,
+				"Пожалуйста, отправьте Excel-файл (.xlsx) с ценами материалов, который был выгружен через «Выгрузить цены на материалы» и в котором заполнена колонка price_per_unit."))
+			return
+		}
+
+		u, err := b.users.GetByTelegramID(ctx, tgID)
+		if err != nil || u == nil {
+			b.send(tgbotapi.NewMessage(chatID, "Пользователь не найден или нет доступа."))
+			return
+		}
+
+		data, err := b.downloadTelegramFile(msg.Document.FileID)
+		if err != nil {
+			b.send(tgbotapi.NewMessage(chatID, "Не удалось скачать файл из Telegram: "+err.Error()))
+			return
+		}
+
+		b.handlePriceMatImportExcel(ctx, chatID, u, data)
 		return
 
 	case dialog.StateConsQty:
@@ -2559,6 +2881,21 @@ func (b *Bot) onCallback(ctx context.Context, upd tgbotapi.Update) {
 			_ = b.states.Set(ctx, fromChat, dialog.StateSubBuyQty, st.Payload)
 			b.editTextWithNav(fromChat, cb.Message.MessageID,
 				fmt.Sprintf("Введите объём (%s):", map[string]string{"hour": "часы", "day": "дни"}[st.Payload["unit"].(string)]))
+		case dialog.StatePriceMenu:
+			b.showPriceMainMenu(fromChat, &cb.Message.MessageID)
+			_ = b.states.Set(ctx, fromChat, dialog.StatePriceMenu, dialog.Payload{})
+
+		case dialog.StatePriceMatMenu:
+			b.showPriceMainMenu(fromChat, &cb.Message.MessageID)
+			_ = b.states.Set(ctx, fromChat, dialog.StatePriceMenu, dialog.Payload{})
+
+		case dialog.StatePriceMatExportPickWh:
+			b.showPriceMatMenu(fromChat, &cb.Message.MessageID)
+			_ = b.states.Set(ctx, fromChat, dialog.StatePriceMatMenu, dialog.Payload{})
+
+		case dialog.StatePriceMatImportFile:
+			b.showPriceMatMenu(fromChat, &cb.Message.MessageID)
+			_ = b.states.Set(ctx, fromChat, dialog.StatePriceMatMenu, dialog.Payload{})
 
 		default:
 			b.editTextAndClear(fromChat, cb.Message.MessageID, "Действие неактуально.")
@@ -3123,6 +3460,39 @@ func (b *Bot) onCallback(ctx context.Context, upd tgbotapi.Update) {
 		_ = b.states.Set(ctx, fromChat, dialog.StateSupMenu, dialog.Payload{})
 		b.showSuppliesMenu(fromChat, nil)
 		_ = b.answerCallback(cb, "Готово", false)
+		return
+
+		// Установка цен
+	case data == "price:mat:menu":
+		_ = b.states.Set(ctx, fromChat, dialog.StatePriceMatMenu, dialog.Payload{})
+		b.showPriceMatMenu(fromChat, &cb.Message.MessageID)
+		_ = b.answerCallback(cb, "Ок", false)
+		return
+
+	case data == "price:rent:menu":
+		// пока заглушка, логику тарифов сделаем позже
+		b.editTextWithNav(fromChat, cb.Message.MessageID,
+			"Настройка новых тарифов на аренду будет реализована позже.")
+		_ = b.answerCallback(cb, "Ок", false)
+		return
+
+	case data == "price:mat:export":
+		_ = b.states.Set(ctx, fromChat, dialog.StatePriceMatExportPickWh, dialog.Payload{})
+		b.showPriceMatExportPickWarehouse(ctx, fromChat, &cb.Message.MessageID)
+		_ = b.answerCallback(cb, "Ок", false)
+		return
+
+	case strings.HasPrefix(data, "price:mat:expwh:"):
+		whID, _ := strconv.ParseInt(strings.TrimPrefix(data, "price:mat:expwh:"), 10, 64)
+		b.exportWarehouseMaterialPricesExcel(ctx, fromChat, cb.Message.MessageID, whID)
+		_ = b.answerCallback(cb, "Файл сформирован", false)
+		return
+
+	case data == "price:mat:import":
+		_ = b.states.Set(ctx, fromChat, dialog.StatePriceMatImportFile, dialog.Payload{})
+		b.editTextWithNav(fromChat, cb.Message.MessageID,
+			"Загрузите Excel-файл с ценами материалов (тот, что вы выгрузили через «Выгрузить цены на материалы» и отредактировали колонку price_per_unit).")
+		_ = b.answerCallback(cb, "Ок", false)
 		return
 
 		// Выбор помещения

@@ -83,6 +83,14 @@ const (
 	StateSubBuyPlace   State = "sub_buy_place"   // выбор места (зал|кабинет)
 	StateSubBuyQty     State = "sub_buy_qty"     // ввод количества (часы|дни)
 	StateSubBuyConfirm State = "sub_buy_confirm" // подтверждение
+
+	// Установка цен (общее меню)
+	StatePriceMenu State = "price_menu"
+
+	// Цены материалов на складах
+	StatePriceMatMenu         State = "price_mat_menu"
+	StatePriceMatExportPickWh State = "price_mat_export_wh"
+	StatePriceMatImportFile   State = "price_mat_import_file"
 )
 
 type Payload map[string]any
