@@ -95,6 +95,8 @@ const (
 	// Тарифы аренды
 	StatePriceRentMenu       State = "price_rent_menu"
 	StatePriceRentImportFile State = "price_rent_import_file"
+
+	StateAdmReportRentPeriod State = "adm_report_rent_period"
 )
 
 type Payload map[string]any

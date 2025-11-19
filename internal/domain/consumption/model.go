@@ -73,3 +73,20 @@ type RentSplitPartResult struct {
 	ThresholdMet  bool      // выполнен ли порог
 	Rate          *RentRate // сам тариф
 }
+
+type MasterMaterialsReportRow struct {
+	UserID    int64
+	Username  string
+	SessionID int64
+
+	CreatedAt time.Time
+	Place     string // hall|cabinet
+	Unit      string // hour|day
+	Qty       int    // количество часов/дней в сессии
+
+	MaterialName string
+	MaterialUnit string
+	MaterialQty  float64
+	UnitPrice    float64
+	Cost         float64
+}
