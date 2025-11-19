@@ -97,6 +97,9 @@ const (
 	StatePriceRentImportFile State = "price_rent_import_file"
 
 	StateAdmReportRentPeriod State = "adm_report_rent_period"
+
+	// Мастер: ввод строки для поиска остатков по названию материала
+	StateMasterStockSearchByName State = "master_stock_search_by_name"
 )
 
 type Payload map[string]any

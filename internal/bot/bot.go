@@ -360,7 +360,7 @@ func (b *Bot) handleSuppliesImportExcel(ctx context.Context, chatID int64, u *us
 // handlePriceRentImportExcel читает Excel-файл с тарифами аренды и
 // обновляет threshold/price_with/price_own по id.
 // Пустая ячейка => значение не меняем.
-func (b *Bot) handlePriceRentImportExcel(ctx context.Context, chatID int64, u *users.User, data []byte) {
+func (b *Bot) handlePriceRentImportExcel(ctx context.Context, chatID int64, data []byte) {
 	f, err := excelize.OpenReader(bytes.NewReader(data))
 	if err != nil {
 		b.send(tgbotapi.NewMessage(chatID, "Не удалось прочитать Excel-файл (повреждён или не .xlsx)."))
@@ -471,7 +471,7 @@ func (b *Bot) handlePriceRentImportExcel(ctx context.Context, chatID int64, u *u
 // handlePriceMatImportExcel читает Excel-файл с ценами материалов и
 // обновляет price_per_unit для указанных материалов.
 // Пустая ячейка price_per_unit означает "оставить старую цену".
-func (b *Bot) handlePriceMatImportExcel(ctx context.Context, chatID int64, u *users.User, data []byte) {
+func (b *Bot) handlePriceMatImportExcel(ctx context.Context, chatID int64, data []byte) {
 	f, err := excelize.OpenReader(bytes.NewReader(data))
 	if err != nil {
 		b.send(tgbotapi.NewMessage(chatID, "Не удалось прочитать Excel-файл (повреждён или не .xlsx)."))
@@ -583,7 +583,7 @@ func (b *Bot) handlePriceMatImportExcel(ctx context.Context, chatID int64, u *us
 }
 
 // handleAdmRentMaterialsReport формирует Excel-файл "Аренда и Расходы материалов по мастерам"
-// за период [from; toExclusive) и отправляет администратору.
+// за период [from; toExclusive] и отправляет администратору.
 func (b *Bot) handleAdmRentMaterialsReport(
 	ctx context.Context,
 	chatID int64,
@@ -843,8 +843,8 @@ func masterReplyKeyboard() tgbotapi.ReplyKeyboardMarkup {
 		ResizeKeyboard: true,
 		Keyboard: [][]tgbotapi.KeyboardButton{
 			{tgbotapi.NewKeyboardButton("Расход/Аренда")},
-			{tgbotapi.NewKeyboardButton("Мои абонементы")},
-			{tgbotapi.NewKeyboardButton("Купить абонемент")},
+			{tgbotapi.NewKeyboardButton("Просмотр остатков")},
+			{tgbotapi.NewKeyboardButton("Мои абонементы"), tgbotapi.NewKeyboardButton("Купить абонемент")},
 		},
 	}
 }
@@ -2376,6 +2376,35 @@ func (b *Bot) onMessage(ctx context.Context, upd tgbotapi.Update) {
 		return
 	}
 
+	if msg.Text == "Просмотр остатков" {
+		u, _ := b.users.GetByTelegramID(ctx, tgID)
+		if u == nil || u.Status != users.StatusApproved || u.Role != users.RoleMaster {
+			return
+		}
+
+		// Сразу работаем со складом «Расходники»
+		_, err := b.getConsumablesWarehouseID(ctx)
+		if err != nil {
+			b.send(tgbotapi.NewMessage(chatID, "Склад «Расходники» не найден. Обратитесь к администратору."))
+			return
+		}
+
+		// склад запоминать в стейте не обязательно, но можно – пока не нужен
+
+		kb := tgbotapi.NewInlineKeyboardMarkup(
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("По названию", "mstock:byname"),
+				tgbotapi.NewInlineKeyboardButtonData("По категории", "mstock:bycat"),
+			),
+			navKeyboard(false, true).InlineKeyboard[0],
+		)
+
+		m := tgbotapi.NewMessage(chatID, "Просмотр остатков (склад: Расходники) — выберите способ поиска:")
+		m.ReplyMarkup = kb
+		b.send(m)
+		return
+	}
+
 	if msg.Text == "Мои абонементы" {
 		u, _ := b.users.GetByTelegramID(ctx, tgID)
 		if u == nil || u.Status != users.StatusApproved || u.Role != users.RoleMaster {
@@ -2841,7 +2870,7 @@ func (b *Bot) onMessage(ctx context.Context, upd tgbotapi.Update) {
 			return
 		}
 
-		b.handlePriceMatImportExcel(ctx, chatID, u, data)
+		b.handlePriceMatImportExcel(ctx, chatID, data)
 		return
 
 	case dialog.StatePriceRentImportFile:
@@ -2863,7 +2892,7 @@ func (b *Bot) onMessage(ctx context.Context, upd tgbotapi.Update) {
 			return
 		}
 
-		b.handlePriceRentImportExcel(ctx, chatID, u, data)
+		b.handlePriceRentImportExcel(ctx, chatID, data)
 		return
 
 	case dialog.StateConsQty:
@@ -3087,6 +3116,48 @@ func (b *Bot) onMessage(ctx context.Context, upd tgbotapi.Update) {
 		}
 
 		_ = b.states.Set(ctx, chatID, dialog.StateIdle, dialog.Payload{})
+		return
+
+	case dialog.StateMasterStockSearchByName:
+		query := strings.TrimSpace(msg.Text)
+		if query == "" {
+			b.send(tgbotapi.NewMessage(chatID, "Введите название материала или его часть."))
+			return
+		}
+
+		whID, err := b.getConsumablesWarehouseID(ctx)
+		if err != nil {
+			b.send(tgbotapi.NewMessage(chatID, "Склад «Расходники» не найден. Обратитесь к администратору."))
+			_ = b.states.Reset(ctx, chatID)
+			return
+		}
+
+		items, err := b.materials.ListWithBalanceByWarehouse(ctx, whID)
+		if err != nil {
+			b.send(tgbotapi.NewMessage(chatID, "Ошибка загрузки материалов со склада."))
+			_ = b.states.Reset(ctx, chatID)
+			return
+		}
+
+		qLower := strings.ToLower(query)
+		var sb strings.Builder
+		_, _ = fmt.Fprintf(&sb, "Склад: Расходники\nПоиск по названию: %s\n\n", query)
+
+		found := 0
+		for _, it := range items {
+			if !strings.Contains(strings.ToLower(it.Name), qLower) {
+				continue
+			}
+			found++
+			_, _ = fmt.Fprintf(&sb, "• %s — %d %s\n", it.Name, it.Balance, it.Unit)
+		}
+
+		if found == 0 {
+			sb.WriteString("По этому запросу ничего не найдено.")
+		}
+
+		b.send(tgbotapi.NewMessage(chatID, sb.String()))
+		_ = b.states.Reset(ctx, chatID)
 		return
 	}
 }
@@ -3772,6 +3843,125 @@ func (b *Bot) onCallback(ctx context.Context, upd tgbotapi.Update) {
 		whID, _ := strconv.ParseInt(strings.TrimPrefix(data, "stock:expwh:"), 10, 64)
 		b.exportWarehouseStocksExcel(ctx, fromChat, cb.Message.MessageID, whID)
 		_ = b.answerCallback(cb, "Файл сформирован", false)
+		return
+
+		// Просмотр остатков мастером (склад «Расходники»)
+	case data == "mstock:byname":
+		u, _ := b.users.GetByTelegramID(ctx, cb.From.ID)
+		if u == nil || u.Role != users.RoleMaster || u.Status != users.StatusApproved {
+			_ = b.answerCallback(cb, "Нет доступа", true)
+			return
+		}
+
+		if _, err := b.getConsumablesWarehouseID(ctx); err != nil {
+			b.editTextAndClear(fromChat, cb.Message.MessageID, "Склад «Расходники» не найден. Обратитесь к администратору.")
+			_ = b.answerCallback(cb, "Ошибка", true)
+			return
+		}
+
+		// ждём текст от мастера
+		_ = b.states.Set(ctx, fromChat, dialog.StateMasterStockSearchByName, dialog.Payload{})
+		b.editTextWithNav(fromChat, cb.Message.MessageID,
+			"Введите часть названия материала для поиска по складу «Расходники».")
+		_ = b.answerCallback(cb, "Ок", false)
+		return
+
+	case data == "mstock:bycat":
+		u, _ := b.users.GetByTelegramID(ctx, cb.From.ID)
+		if u == nil || u.Role != users.RoleMaster || u.Status != users.StatusApproved {
+			_ = b.answerCallback(cb, "Нет доступа", true)
+			return
+		}
+
+		whID, err := b.getConsumablesWarehouseID(ctx)
+		if err != nil {
+			b.editTextAndClear(fromChat, cb.Message.MessageID, "Склад «Расходники» не найден. Обратитесь к администратору.")
+			_ = b.answerCallback(cb, "Ошибка", true)
+			return
+		}
+
+		cats, err := b.catalog.ListCategories(ctx)
+		if err != nil || len(cats) == 0 {
+			b.editTextAndClear(fromChat, cb.Message.MessageID, "Не удалось загрузить категории материалов.")
+			_ = b.answerCallback(cb, "Ошибка", true)
+			return
+		}
+
+		rows := make([][]tgbotapi.InlineKeyboardButton, 0, len(cats)+1)
+		for _, c := range cats {
+			rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData(c.Name, fmt.Sprintf("mstock:cat:%d", c.ID)),
+			))
+		}
+		rows = append(rows, navKeyboard(false, true).InlineKeyboard[0])
+
+		kb := tgbotapi.NewInlineKeyboardMarkup(rows...)
+		text := fmt.Sprintf("Склад: Расходники (ID %d)\nВыберите категорию:", whID)
+		b.send(tgbotapi.NewEditMessageTextAndMarkup(fromChat, cb.Message.MessageID, text, kb))
+
+		_ = b.answerCallback(cb, "Ок", false)
+		return
+
+	case strings.HasPrefix(data, "mstock:cat:"):
+		u, _ := b.users.GetByTelegramID(ctx, cb.From.ID)
+		if u == nil || u.Role != users.RoleMaster || u.Status != users.StatusApproved {
+			_ = b.answerCallback(cb, "Нет доступа", true)
+			return
+		}
+
+		whID, err := b.getConsumablesWarehouseID(ctx)
+		if err != nil {
+			b.editTextAndClear(fromChat, cb.Message.MessageID, "Склад «Расходники» не найден. Обратитесь к администратору.")
+			_ = b.answerCallback(cb, "Ошибка", true)
+			return
+		}
+
+		catStr := strings.TrimPrefix(data, "mstock:cat:")
+		catID, err := strconv.ParseInt(catStr, 10, 64)
+		if err != nil {
+			b.editTextAndClear(fromChat, cb.Message.MessageID, "Некорректная категория.")
+			_ = b.answerCallback(cb, "Ошибка", true)
+			return
+		}
+
+		items, err := b.materials.ListWithBalanceByWarehouse(ctx, whID)
+		if err != nil {
+			b.editTextAndClear(fromChat, cb.Message.MessageID, "Ошибка загрузки материалов.")
+			_ = b.answerCallback(cb, "Ошибка", true)
+			return
+		}
+
+		cats, err := b.catalog.ListCategories(ctx)
+		if err != nil {
+			b.editTextAndClear(fromChat, cb.Message.MessageID, "Ошибка загрузки категорий.")
+			_ = b.answerCallback(cb, "Ошибка", true)
+			return
+		}
+		catName := fmt.Sprintf("ID %d", catID)
+		for _, c := range cats {
+			if c.ID == catID {
+				catName = c.Name
+				break
+			}
+		}
+
+		var sb strings.Builder
+		_, _ = fmt.Fprintf(&sb, "Склад: Расходники\nКатегория: %s\n\n", catName)
+
+		found := 0
+		for _, it := range items {
+			if it.CategoryID != catID {
+				continue
+			}
+			found++
+			_, _ = fmt.Fprintf(&sb, "• %s — %d %s\n", it.Name, it.Balance, it.Unit)
+		}
+		if found == 0 {
+			sb.WriteString("В этой категории на складе нет материалов.")
+		}
+
+		b.editTextAndClear(fromChat, cb.Message.MessageID, sb.String())
+		_ = b.answerCallback(cb, "Готово", false)
 		return
 
 		// Остатки: выбор склада -> список
