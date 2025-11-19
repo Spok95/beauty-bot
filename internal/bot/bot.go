@@ -582,6 +582,193 @@ func (b *Bot) handlePriceMatImportExcel(ctx context.Context, chatID int64, u *us
 	b.showPriceMatMenu(chatID, nil)
 }
 
+// handleAdmRentMaterialsReport формирует Excel-файл "Аренда и Расходы материалов по мастерам"
+// за период [from; toExclusive) и отправляет администратору.
+func (b *Bot) handleAdmRentMaterialsReport(
+	ctx context.Context,
+	chatID int64,
+	from, toExclusive time.Time,
+) error {
+	rows, err := b.cons.ListMasterMaterialsReport(ctx, from, toExclusive)
+	if err != nil {
+		return err
+	}
+	if len(rows) == 0 {
+		msg := tgbotapi.NewMessage(chatID, "За указанный период нет данных по аренде и расходу материалов.")
+		b.send(msg)
+		return nil
+	}
+
+	f := excelize.NewFile()
+	defer func() { _ = f.Close() }()
+
+	// Группируем по мастеру
+	type sessionKey struct {
+		SessionID int64
+		Place     string
+		Unit      string
+	}
+	type usageKey struct {
+		Place string
+		Unit  string
+	}
+	type masterData struct {
+		Rows     []consumption.MasterMaterialsReportRow
+		Sessions map[sessionKey]struct{}
+		ByUsage  map[usageKey]int // суммарное количество часов/дней по place/unit
+		Username string
+	}
+	masters := make(map[int64]*masterData)
+
+	for _, r := range rows {
+		md, ok := masters[r.UserID]
+		if !ok {
+			md = &masterData{
+				Rows:     make([]consumption.MasterMaterialsReportRow, 0),
+				Sessions: make(map[sessionKey]struct{}),
+				ByUsage:  make(map[usageKey]int),
+				Username: r.Username,
+			}
+			masters[r.UserID] = md
+		}
+		md.Rows = append(md.Rows, r)
+
+		// учёт аренды: считаем сессию один раз
+		sk := sessionKey{SessionID: r.SessionID, Place: r.Place, Unit: r.Unit}
+		if _, exists := md.Sessions[sk]; !exists {
+			md.Sessions[sk] = struct{}{}
+			uk := usageKey{Place: r.Place, Unit: r.Unit}
+			md.ByUsage[uk] += r.Qty
+		}
+	}
+
+	// Удалим дефолтный лист
+	defaultSheet := f.GetSheetName(f.GetActiveSheetIndex())
+	if defaultSheet != "" {
+		_ = f.DeleteSheet(defaultSheet)
+	}
+
+	// Для каждого мастера свой лист
+	for userID, md := range masters {
+		sheetName := fmt.Sprintf("user_%d", userID)
+		if len(md.Username) > 0 {
+			// чуть более человеко-читаемое имя (но не больше 31 символа, иначе Excel ругается)
+			base := md.Username
+			if len(base) > 20 {
+				base = base[:20]
+			}
+			sheetName = fmt.Sprintf("%s_%d", base, userID)
+		}
+		if len(sheetName) > 31 {
+			sheetName = sheetName[:31]
+		}
+
+		_, err := f.NewSheet(sheetName)
+		if err != nil {
+			// если какое-то имя не зашло — fallback
+			sheetName = fmt.Sprintf("user_%d", userID)
+			_, _ = f.NewSheet(sheetName)
+		}
+
+		rowIdx := 1
+
+		// Заголовок: информация по мастеру и периоду
+		header := fmt.Sprintf("Отчёт по мастеру %s за период %s — %s",
+			strings.TrimSpace(md.Username),
+			from.Format("02.01.2006"),
+			toExclusive.Add(-24*time.Hour).Format("02.01.2006"),
+		)
+		if err := f.SetCellValue(sheetName, "A1", header); err != nil {
+			return err
+		}
+		if err := f.MergeCell(sheetName, "A1", "F1"); err != nil {
+			return err
+		}
+		rowIdx += 2
+
+		// Статистика по аренде: часы/дни по помещению
+		_ = f.SetCellValue(sheetName, fmt.Sprintf("A%d", rowIdx), "Помещение")
+		_ = f.SetCellValue(sheetName, fmt.Sprintf("B%d", rowIdx), "Ед.")
+		_ = f.SetCellValue(sheetName, fmt.Sprintf("C%d", rowIdx), "Кол-во")
+		rowIdx++
+
+		for uk, qty := range md.ByUsage {
+			var placeRU string
+			switch uk.Place {
+			case "hall":
+				placeRU = "Зал"
+			case "cabinet":
+				placeRU = "Кабинет"
+			default:
+				placeRU = uk.Place
+			}
+			var unitRU string
+			switch uk.Unit {
+			case "hour":
+				unitRU = "часы"
+			case "day":
+				unitRU = "дни"
+			default:
+				unitRU = uk.Unit
+			}
+			_ = f.SetCellValue(sheetName, fmt.Sprintf("A%d", rowIdx), placeRU)
+			_ = f.SetCellValue(sheetName, fmt.Sprintf("B%d", rowIdx), unitRU)
+			_ = f.SetCellValue(sheetName, fmt.Sprintf("C%d", rowIdx), qty)
+			rowIdx++
+		}
+
+		rowIdx += 2
+
+		// Таблица с материалами
+		_ = f.SetCellValue(sheetName, fmt.Sprintf("A%d", rowIdx), "Дата")
+		_ = f.SetCellValue(sheetName, fmt.Sprintf("B%d", rowIdx), "Материал")
+		_ = f.SetCellValue(sheetName, fmt.Sprintf("C%d", rowIdx), "Ед.")
+		_ = f.SetCellValue(sheetName, fmt.Sprintf("D%d", rowIdx), "Кол-во")
+		_ = f.SetCellValue(sheetName, fmt.Sprintf("E%d", rowIdx), "Цена за ед.")
+		_ = f.SetCellValue(sheetName, fmt.Sprintf("F%d", rowIdx), "Сумма")
+		rowIdx++
+
+		for _, r := range md.Rows {
+			dateStr := r.CreatedAt.Format("02.01.2006 15:04")
+
+			_ = f.SetCellValue(sheetName, fmt.Sprintf("A%d", rowIdx), dateStr)
+			_ = f.SetCellValue(sheetName, fmt.Sprintf("B%d", rowIdx), r.MaterialName)
+			_ = f.SetCellValue(sheetName, fmt.Sprintf("C%d", rowIdx), r.MaterialUnit)
+			_ = f.SetCellValue(sheetName, fmt.Sprintf("D%d", rowIdx), r.MaterialQty)
+			_ = f.SetCellValue(sheetName, fmt.Sprintf("E%d", rowIdx), r.UnitPrice)
+			_ = f.SetCellValue(sheetName, fmt.Sprintf("F%d", rowIdx), r.Cost)
+			rowIdx++
+		}
+	}
+
+	// активный лист — первый созданный
+	if sheets := f.GetSheetList(); len(sheets) > 0 {
+		if idx, err := f.GetSheetIndex(sheets[0]); err == nil {
+			f.SetActiveSheet(idx)
+		}
+	}
+
+	filename := fmt.Sprintf("rent_materials_%s_%s.xlsx",
+		from.Format("20060102"),
+		toExclusive.Add(-24*time.Hour).Format("20060102"),
+	)
+
+	var buf bytes.Buffer
+	if err := f.Write(&buf); err != nil {
+		return err
+	}
+
+	doc := tgbotapi.FileBytes{
+		Name:  filename,
+		Bytes: buf.Bytes(),
+	}
+	msg := tgbotapi.NewDocument(chatID, doc)
+	msg.Caption = "Отчёт по аренде и расходам материалов по мастерам"
+
+	b.send(msg)
+	return nil
+}
+
 func navKeyboard(back bool, cancel bool) tgbotapi.InlineKeyboardMarkup {
 	row := []tgbotapi.InlineKeyboardButton{}
 	if back {
@@ -646,6 +833,7 @@ func adminReplyKeyboard() tgbotapi.ReplyKeyboardMarkup {
 			{tgbotapi.NewKeyboardButton("Категории"), tgbotapi.NewKeyboardButton("Материалы")},
 			{tgbotapi.NewKeyboardButton("Остатки"), tgbotapi.NewKeyboardButton("Поставки")},
 			{tgbotapi.NewKeyboardButton("Установка цен"), tgbotapi.NewKeyboardButton("Установка тарифов")},
+			{tgbotapi.NewKeyboardButton("Аренда и Расходы материалов по мастерам")},
 		},
 	}
 }
@@ -2245,7 +2433,7 @@ func (b *Bot) onMessage(ctx context.Context, upd tgbotapi.Update) {
 	}
 
 	// Кнопки нижней панели для админа
-	if msg.Text == "Склады" || msg.Text == "Категории" || msg.Text == "Материалы" || msg.Text == "Остатки" || msg.Text == "Поставки" || msg.Text == "Абонементы" || msg.Text == "Установка цен" {
+	if msg.Text == "Склады" || msg.Text == "Категории" || msg.Text == "Материалы" || msg.Text == "Остатки" || msg.Text == "Поставки" || msg.Text == "Абонементы" || msg.Text == "Установка цен" || msg.Text == "Аренда и Расходы материалов по мастерам" {
 		u, _ := b.users.GetByTelegramID(ctx, tgID)
 		if u == nil || u.Role != users.RoleAdmin || u.Status != users.StatusApproved {
 			// игнорируем для не-админов
@@ -2277,6 +2465,14 @@ func (b *Bot) onMessage(ctx context.Context, upd tgbotapi.Update) {
 		case "Установка цен":
 			_ = b.states.Set(ctx, chatID, dialog.StatePriceMenu, dialog.Payload{})
 			b.showPriceMainMenu(chatID, nil)
+			return
+		case "Аренда и Расходы материалов по мастерам":
+			_ = b.states.Set(ctx, chatID, dialog.StateAdmReportRentPeriod, dialog.Payload{})
+			msg := tgbotapi.NewMessage(chatID,
+				"Введите период для отчёта в формате ДД.ММ.ГГГГ-ДД.ММ.ГГГГ.\n"+
+					"Например: 01.11.2025-30.11.2025.\n"+
+					"Дата окончания включительно, данные будут взяты до конца этого дня.")
+			b.send(msg)
 			return
 		}
 		return
@@ -2858,6 +3054,39 @@ func (b *Bot) onMessage(ctx context.Context, upd tgbotapi.Update) {
 		m := tgbotapi.NewMessage(chatID, preview)
 		m.ReplyMarkup = kb
 		b.send(m)
+		return
+
+	case dialog.StateAdmReportRentPeriod:
+		period := strings.TrimSpace(msg.Text)
+		dates := strings.Split(period, "-")
+		if len(dates) != 2 {
+			b.send(tgbotapi.NewMessage(chatID, "Неверный формат. Используйте ДД.ММ.ГГГГ-ДД.ММ.ГГГГ, например 01.11.2025-30.11.2025."))
+			return
+		}
+		const layout = "02.01.2006"
+		fromStr := strings.TrimSpace(dates[0])
+		toStr := strings.TrimSpace(dates[1])
+
+		from, err1 := time.Parse(layout, fromStr)
+		to, err2 := time.Parse(layout, toStr)
+		if err1 != nil || err2 != nil {
+			b.send(tgbotapi.NewMessage(chatID, "Не удалось разобрать дату. Проверьте формат ДД.ММ.ГГГГ."))
+			return
+		}
+		if !to.After(from) && !to.Equal(from) {
+			b.send(tgbotapi.NewMessage(chatID, "Дата окончания должна быть не раньше даты начала."))
+			return
+		}
+
+		// делаем to эксклюзивной границей: +1 день
+		toExclusive := to.Add(24 * time.Hour)
+
+		if err := b.handleAdmRentMaterialsReport(ctx, chatID, from, toExclusive); err != nil {
+			b.send(tgbotapi.NewMessage(chatID, fmt.Sprintf("Ошибка формирования отчёта: %v", err)))
+			return
+		}
+
+		_ = b.states.Set(ctx, chatID, dialog.StateIdle, dialog.Payload{})
 		return
 	}
 }

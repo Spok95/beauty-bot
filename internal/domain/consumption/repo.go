@@ -416,3 +416,70 @@ func roundTo10(x float64) float64 {
 	// до ближайшего десятка
 	return float64(int((x+5)/10) * 10)
 }
+
+// ListMasterMaterialsReport возвращает строки для отчёта
+// "Аренда и Расходы материалов по мастерам" за период [from; to).
+// to — НЕ включительно (поэтому для "до конца дня" мы будем прибавлять 1 день в боте).
+func (r *Repo) ListMasterMaterialsReport(
+	ctx context.Context,
+	from, to time.Time,
+) ([]MasterMaterialsReportRow, error) {
+	const q = `
+SELECT
+    s.user_id,
+    COALESCE(u.username, '') AS username,
+    s.id       AS session_id,
+    s.created_at,
+    s.place,
+    s.unit,
+    s.qty,
+    m.name     AS material_name,
+    m.unit     AS material_unit,
+    i.qty      AS material_qty,
+    i.unit_price,
+    i.cost
+FROM consumption_sessions AS s
+JOIN users             AS u ON u.id = s.user_id
+JOIN consumption_items AS i ON i.session_id = s.id
+JOIN materials         AS m ON m.id = i.material_id
+WHERE
+    s.created_at >= $1
+    AND s.created_at <  $2
+    -- если хочешь всё же фильтровать, можно так:
+    -- AND s.status <> 'canceled'
+ORDER BY
+    s.user_id,
+    s.created_at,
+    s.id,
+    m.name;
+`
+
+	rows, err := r.pool.Query(ctx, q, from, to)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var res []MasterMaterialsReportRow
+	for rows.Next() {
+		var row MasterMaterialsReportRow
+		if err := rows.Scan(
+			&row.UserID,
+			&row.Username,
+			&row.SessionID,
+			&row.CreatedAt,
+			&row.Place,
+			&row.Unit,
+			&row.Qty,
+			&row.MaterialName,
+			&row.MaterialUnit,
+			&row.MaterialQty,
+			&row.UnitPrice,
+			&row.Cost,
+		); err != nil {
+			return nil, err
+		}
+		res = append(res, row)
+	}
+	return res, rows.Err()
+}
