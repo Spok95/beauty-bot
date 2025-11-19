@@ -849,6 +849,16 @@ func masterReplyKeyboard() tgbotapi.ReplyKeyboardMarkup {
 	}
 }
 
+func salonAdminReplyKeyboard() tgbotapi.ReplyKeyboardMarkup {
+	return tgbotapi.ReplyKeyboardMarkup{
+		ResizeKeyboard: true,
+		Keyboard: [][]tgbotapi.KeyboardButton{
+			{tgbotapi.NewKeyboardButton("Категории"), tgbotapi.NewKeyboardButton("Материалы")},
+			{tgbotapi.NewKeyboardButton("Остатки"), tgbotapi.NewKeyboardButton("Поставки")},
+		},
+	}
+}
+
 // Бейдж активности
 func badge(b bool) string {
 	if b {
@@ -1103,9 +1113,16 @@ func (b *Bot) showStockExportPickWarehouse(ctx context.Context, chatID int64, ed
 		return
 	}
 
+	u, _ := b.users.GetByTelegramID(ctx, chatID)
+	administrator := u != nil && u.Status == users.StatusApproved && u.Role == users.RoleAdministrator
+
 	rows := [][]tgbotapi.InlineKeyboardButton{}
 	for _, w := range ws {
 		if !w.Active {
+			continue
+		}
+		if administrator && w.Type != catalog.WHTClientService {
+			// администратор салона видит только клиентский склад
 			continue
 		}
 		rows = append(rows, tgbotapi.NewInlineKeyboardRow(
@@ -1136,9 +1153,15 @@ func (b *Bot) showStockWarehouseList(ctx context.Context, chatID int64, editMsgI
 		b.send(tgbotapi.NewMessage(chatID, "Ошибка загрузки складов"))
 		return
 	}
+	u, _ := b.users.GetByTelegramID(ctx, chatID)
+	salonAdmin := u != nil && u.Status == users.StatusApproved && u.Role == users.RoleAdministrator
+
 	rows := [][]tgbotapi.InlineKeyboardButton{}
 	for _, w := range ws {
 		if !w.Active {
+			continue
+		}
+		if salonAdmin && w.Type != catalog.WHTClientService {
 			continue
 		}
 		rows = append(rows, tgbotapi.NewInlineKeyboardRow(
@@ -1292,9 +1315,15 @@ func (b *Bot) showSuppliesPickWarehouse(ctx context.Context, chatID int64, editM
 		b.editTextAndClear(chatID, *editMsgID, "Ошибка загрузки складов")
 		return
 	}
+	u, _ := b.users.GetByTelegramID(ctx, chatID)
+	salonAdmin := u != nil && u.Status == users.StatusApproved && u.Role == users.RoleAdministrator
+
 	rows := [][]tgbotapi.InlineKeyboardButton{}
 	for _, w := range ws {
 		if !w.Active {
+			continue
+		}
+		if salonAdmin && w.Type != catalog.WHTClientService {
 			continue
 		}
 		rows = append(rows, tgbotapi.NewInlineKeyboardRow(
@@ -1316,10 +1345,15 @@ func (b *Bot) showSuppliesExportPickWarehouse(ctx context.Context, chatID int64,
 		}
 		return
 	}
+	u, _ := b.users.GetByTelegramID(ctx, chatID)
+	salonAdmin := u != nil && u.Status == users.StatusApproved && u.Role == users.RoleAdministrator
 
 	rows := [][]tgbotapi.InlineKeyboardButton{}
 	for _, w := range ws {
 		if !w.Active {
+			continue
+		}
+		if salonAdmin && w.Type != catalog.WHTClientService {
 			continue
 		}
 		rows = append(rows, tgbotapi.NewInlineKeyboardRow(
@@ -2275,7 +2309,15 @@ func (b *Bot) onMessage(ctx context.Context, upd tgbotapi.Update) {
 	if msg.IsCommand() {
 		switch msg.Command() {
 		case "start":
-			u, err := b.users.UpsertByTelegram(ctx, tgID, users.RoleMaster)
+			// не затираем роль, если пользователь уже существует
+			existing, _ := b.users.GetByTelegramID(ctx, tgID)
+
+			defaultRole := users.RoleMaster
+			if existing != nil && existing.Role != "" {
+				defaultRole = existing.Role
+			}
+
+			u, err := b.users.UpsertByTelegram(ctx, tgID, defaultRole)
 			if err != nil {
 				b.send(tgbotapi.NewMessage(chatID, "Ошибка: не удалось сохранить профиль"))
 				return
@@ -2299,6 +2341,14 @@ func (b *Bot) onMessage(ctx context.Context, upd tgbotapi.Update) {
 			if u.Role == users.RoleMaster && u.Status == users.StatusApproved {
 				m := tgbotapi.NewMessage(chatID, "Готово! Для учёта материалов и аренды жми «Расход/Аренда» или используй /rent.")
 				m.ReplyMarkup = masterReplyKeyboard()
+				b.send(m)
+				return
+			}
+
+			if u.Role == users.RoleAdministrator && u.Status == users.StatusApproved {
+				m := tgbotapi.NewMessage(chatID,
+					"Готово! Для работы со складом «Клиентский» используйте кнопки снизу или /help.")
+				m.ReplyMarkup = salonAdminReplyKeyboard()
 				b.send(m)
 				return
 			}
@@ -2462,40 +2512,66 @@ func (b *Bot) onMessage(ctx context.Context, upd tgbotapi.Update) {
 	}
 
 	// Кнопки нижней панели для админа
-	if msg.Text == "Склады" || msg.Text == "Категории" || msg.Text == "Материалы" || msg.Text == "Остатки" || msg.Text == "Поставки" || msg.Text == "Абонементы" || msg.Text == "Установка цен" || msg.Text == "Аренда и Расходы материалов по мастерам" {
+	if msg.Text == "Склады" || msg.Text == "Категории" || msg.Text == "Материалы" ||
+		msg.Text == "Остатки" || msg.Text == "Поставки" || msg.Text == "Абонементы" ||
+		msg.Text == "Установка цен" || msg.Text == "Аренда и Расходы материалов по мастерам" {
 		u, _ := b.users.GetByTelegramID(ctx, tgID)
-		if u == nil || u.Role != users.RoleAdmin || u.Status != users.StatusApproved {
+		if u == nil || u.Status != users.StatusApproved {
 			// игнорируем для не-админов
 			return
 		}
 		switch msg.Text {
 		case "Склады":
+			if u.Role != users.RoleAdmin {
+				return
+			}
 			_ = b.states.Set(ctx, chatID, dialog.StateAdmWhMenu, dialog.Payload{})
 			b.showWarehouseMenu(chatID, nil)
 		case "Категории":
+			if u.Role != users.RoleAdmin && u.Role != users.RoleAdministrator {
+				return
+			}
 			_ = b.states.Set(ctx, chatID, dialog.StateAdmCatMenu, dialog.Payload{})
 			b.showCategoryMenu(chatID, nil)
 		case "Материалы":
+			if u.Role != users.RoleAdmin && u.Role != users.RoleAdministrator {
+				return
+			}
 			_ = b.states.Set(ctx, chatID, dialog.StateAdmMatMenu, dialog.Payload{})
 			b.showMaterialMenu(chatID, nil)
 			return
 		case "Остатки":
+			if u.Role != users.RoleAdmin && u.Role != users.RoleAdministrator {
+				return
+			}
 			_ = b.states.Set(ctx, chatID, dialog.StateStockMenu, dialog.Payload{})
 			b.showStocksMenu(chatID, nil)
 			return
 		case "Поставки":
+			if u.Role != users.RoleAdmin && u.Role != users.RoleAdministrator {
+				return
+			}
 			_ = b.states.Set(ctx, chatID, dialog.StateSupMenu, dialog.Payload{})
 			b.showSuppliesMenu(chatID, nil)
 			return
 		case "Абонементы":
+			if u.Role != users.RoleAdmin {
+				return
+			}
 			_ = b.states.Set(ctx, chatID, dialog.StateAdmSubsMenu, dialog.Payload{})
 			b.showSubsMenu(chatID, nil)
 			return
 		case "Установка цен":
+			if u.Role != users.RoleAdmin {
+				return
+			}
 			_ = b.states.Set(ctx, chatID, dialog.StatePriceMenu, dialog.Payload{})
 			b.showPriceMainMenu(chatID, nil)
 			return
 		case "Аренда и Расходы материалов по мастерам":
+			if u.Role != users.RoleAdmin {
+				return
+			}
 			_ = b.states.Set(ctx, chatID, dialog.StateAdmReportRentPeriod, dialog.Payload{})
 			msg := tgbotapi.NewMessage(chatID,
 				"Введите период для отчёта в формате ДД.ММ.ГГГГ-ДД.ММ.ГГГГ.\n"+
