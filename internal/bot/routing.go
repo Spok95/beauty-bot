@@ -1997,11 +1997,36 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 
 	case data == "cons:calc":
 		st, _ := b.states.Get(ctx, fromChat)
+		if st == nil || st.Payload == nil {
+			// сессия потерялась — аккуратно выходим
+			b.editTextAndClear(fromChat, cb.Message.MessageID,
+				"Сессия устарела. Начните заново через кнопку «Расход/Аренда».")
+			_ = b.answerCallback(cb, "Ошибка", true)
+			return
+		}
 
-		place := st.Payload["place"].(string)
-		unit := st.Payload["unit"].(string)
-		qty := int(st.Payload["qty"].(float64))
-		items := b.consParseItems(st.Payload["items"])
+		placeRaw, okP := st.Payload["place"]
+		unitRaw, okU := st.Payload["unit"]
+		qtyRaw, okQ := st.Payload["qty"]
+		itemsRaw, okItems := st.Payload["items"]
+		if !okP || !okU || !okQ || !okItems {
+			b.editTextAndClear(fromChat, cb.Message.MessageID,
+				"Эта корзина уже неактуальна. Начните новую сессию через меню «Расход/Аренда».")
+			_ = b.answerCallback(cb, "Сессия устарела", true)
+			return
+		}
+
+		place, ok1 := placeRaw.(string)
+		unit, ok2 := unitRaw.(string)
+		qtyF, ok3 := qtyRaw.(float64)
+		if !ok1 || !ok2 || !ok3 {
+			b.editTextAndClear(fromChat, cb.Message.MessageID,
+				"Эта корзина уже неактуальна. Начните новую сессию через меню «Расход/Аренда».")
+			_ = b.answerCallback(cb, "Сессия устарела", true)
+			return
+		}
+		qty := int(qtyF)
+		items := b.consParseItems(itemsRaw)
 
 		// 1) стоимость материалов
 		var mats float64
@@ -2172,8 +2197,9 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 			),
 		}
 		if warn != "" {
-			// даём сразу кнопки покупки абонемента по помещению
-			rows = append(rows, b.subBuyPlaceKeyboard().InlineKeyboard[0])
+			rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("Купить абонемент", "cons:buy_sub"),
+			))
 		}
 		// навигация назад / в меню
 		rows = append(rows, navKeyboard(true, true).InlineKeyboard[0])
