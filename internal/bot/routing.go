@@ -2736,27 +2736,3 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 		return
 	}
 }
-
-func (b *Bot) answerCallback(cb *tgbotapi.CallbackQuery, text string, alert bool) error {
-	resp := tgbotapi.NewCallback(cb.ID, text)
-	resp.ShowAlert = alert
-	_, err := b.api.Request(resp)
-	return err
-}
-
-func (b *Bot) consParseItems(v any) []map[string]any {
-	arr, ok := v.([]any)
-	if !ok {
-		if mm, ok2 := v.([]map[string]any); ok2 {
-			return mm
-		}
-		return nil
-	}
-	out := make([]map[string]any, 0, len(arr))
-	for _, e := range arr {
-		if m, ok := e.(map[string]any); ok {
-			out = append(out, m)
-		}
-	}
-	return out
-}

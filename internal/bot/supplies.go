@@ -116,24 +116,6 @@ func (b *Bot) showSuppliesPickMaterial(ctx context.Context, chatID int64, editMs
 	b.send(tgbotapi.NewEditMessageTextAndMarkup(chatID, editMsgID, "Выберите материал:", kb))
 }
 
-// parseSupItems достаёт []map[string]any из payload["items"]
-func (b *Bot) parseSupItems(v any) []map[string]any {
-	items := []map[string]any{}
-	arr, ok := v.([]any)
-	if !ok {
-		if mm, ok2 := v.([]map[string]any); ok2 {
-			return mm
-		}
-		return items
-	}
-	for _, e := range arr {
-		if m, ok := e.(map[string]any); ok {
-			items = append(items, m)
-		}
-	}
-	return items
-}
-
 func (b *Bot) handleSuppliesImportExcel(ctx context.Context, chatID int64, u *users.User, data []byte) {
 	// 1) открываем Excel из байтов
 	f, err := excelize.OpenReader(bytes.NewReader(data))

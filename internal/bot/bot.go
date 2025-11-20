@@ -3,11 +3,8 @@ package bot
 import (
 	"context"
 	"fmt"
-	"io"
 	"log/slog"
-	"net/http"
 	"strings"
-	"time"
 
 	"github.com/Spok95/beauty-bot/internal/domain/consumption"
 	"github.com/Spok95/beauty-bot/internal/domain/inventory"
@@ -68,123 +65,12 @@ func (b *Bot) Run(ctx context.Context, timeoutSec int) error {
 	}
 }
 
-func (b *Bot) send(msg tgbotapi.Chattable) {
-	if _, err := b.api.Send(msg); err != nil {
-		b.log.Error("send failed", "err", err)
-	}
-}
-
-/*** NAV HELPERS ***/
-
-// downloadTelegramFile скачивает файл по FileID через Telegram API.
-func (b *Bot) downloadTelegramFile(fileID string) ([]byte, error) {
-	url, err := b.api.GetFileDirectURL(fileID)
-	if err != nil {
-		return nil, fmt.Errorf("get file url: %w", err)
-	}
-
-	resp, err := http.Get(url)
-	if err != nil {
-		return nil, fmt.Errorf("download file: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("telegram returned status %s", resp.Status)
-	}
-
-	data, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("read body: %w", err)
-	}
-	return data, nil
-}
-
-func (b *Bot) editTextAndClear(chatID int64, messageID int, text string) {
-	edit := tgbotapi.NewEditMessageTextAndMarkup(
-		chatID, messageID, text,
-		tgbotapi.InlineKeyboardMarkup{InlineKeyboard: [][]tgbotapi.InlineKeyboardButton{}},
-	)
-	b.send(edit)
-}
-
-func (b *Bot) editTextWithNav(chatID int64, messageID int, text string) {
-	kb := navKeyboard(true, true)
-	edit := tgbotapi.NewEditMessageTextAndMarkup(chatID, messageID, text, kb)
-	b.send(edit)
-}
-
-// Бейдж активности
-func badge(b bool) string {
-	if b {
-		return "🟢"
-	}
-	return "🚫"
-}
-
 // rentPartMeta — «кусок» сессии: либо по конкретному абонементу, либо без абонемента.
 type rentPartMeta struct {
 	WithSub   bool  // true — часть по абонементу, false — без абонемента
 	Qty       int   // сколько часов/дней в этой части
 	SubID     int64 // 0 — нет абонемента (часть без абонемента)
 	PlanLimit int   // номинальный лимит плана (30, 50, ...) — для текста и выбора тарифа
-}
-
-// splitQtyBySubscriptions делит qty по активным абонементам (FIFO), остаток — без абонемента.
-// Использует новую модель: несколько абонементов за месяц, поле PlanLimit, ListActiveByPlaceUnitMonth.
-func (b *Bot) splitQtyBySubscriptions(
-	ctx context.Context,
-	userID int64,
-	place, unit string,
-	qty int,
-) ([]rentPartMeta, error) {
-	metas := make([]rentPartMeta, 0, 3)
-
-	if qty <= 0 {
-		return metas, nil
-	}
-
-	remaining := qty
-
-	// 1) части по абонементам (если есть)
-	if b.subs != nil {
-		month := time.Now().Format("2006-01")
-		subs, err := b.subs.ListActiveByPlaceUnitMonth(ctx, userID, place, unit, month)
-		if err == nil {
-			for _, s := range subs {
-				left := s.TotalQty - s.UsedQty
-				if left <= 0 {
-					continue
-				}
-				if remaining <= 0 {
-					break
-				}
-				use := remaining
-				if left < use {
-					use = left
-				}
-				metas = append(metas, rentPartMeta{
-					WithSub:   true,
-					Qty:       use,
-					SubID:     s.ID,
-					PlanLimit: s.PlanLimit,
-				})
-				remaining -= use
-			}
-		}
-	}
-
-	// 2) то, что не покрыто абонементами — часть без абонемента
-	if remaining > 0 {
-		metas = append(metas, rentPartMeta{
-			WithSub:   false,
-			Qty:       remaining,
-			SubID:     0,
-			PlanLimit: 0,
-		})
-	}
-
-	return metas, nil
 }
 
 func (b *Bot) showConsCart(ctx context.Context, chatID int64, editMsgID *int, place, unit string, qty int, items []map[string]any) {
@@ -218,85 +104,6 @@ func (b *Bot) showConsCart(ctx context.Context, chatID int64, editMsgID *int, pl
 		m.ReplyMarkup = kb
 		b.send(m)
 	}
-}
-
-// showSubsMenu Меню «Абонементы» для админа
-func (b *Bot) showSubsMenu(chatID int64, editMsgID *int) {
-	kb := tgbotapi.NewInlineKeyboardMarkup(
-		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("➕ Создать абонемент", "adm:subs:add"),
-			// tgbotapi.NewInlineKeyboardButtonData("📄 Список (текущий месяц)", "adm:subs:list"), // позже
-		),
-		navKeyboard(false, true).InlineKeyboard[0],
-	)
-	text := "Абонементы — выберите действие"
-	if editMsgID != nil {
-		b.send(tgbotapi.NewEditMessageTextAndMarkup(chatID, *editMsgID, text, kb))
-	} else {
-		m := tgbotapi.NewMessage(chatID, text)
-		m.ReplyMarkup = kb
-		b.send(m)
-	}
-}
-
-// showSubsPickUser — выбор мастера для абонемента
-func (b *Bot) showSubsPickUser(ctx context.Context, chatID int64, editMsgID int) {
-	list, err := b.users.ListByRole(ctx, users.RoleMaster, users.StatusApproved)
-	if err != nil || len(list) == 0 {
-		b.editTextAndClear(chatID, editMsgID, "Нет утверждённых мастеров.")
-		return
-	}
-
-	rows := [][]tgbotapi.InlineKeyboardButton{}
-	for _, u := range list {
-		title := strings.TrimSpace(u.Username) // в Username у нас «ФИО/отображаемое имя»
-		if title == "" {
-			title = fmt.Sprintf("id %d", u.ID)
-		}
-		rows = append(rows, tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData(title, fmt.Sprintf("adm:subs:user:%d", u.ID)),
-		))
-	}
-	rows = append(rows, navKeyboard(true, true).InlineKeyboard[0])
-
-	kb := tgbotapi.NewInlineKeyboardMarkup(rows...)
-	b.send(tgbotapi.NewEditMessageTextAndMarkup(chatID, editMsgID, "Выберите мастера:", kb))
-}
-
-// showSubsPickPlaceUnit Выбор места/единицы
-func (b *Bot) showSubsPickPlaceUnit(chatID int64, editMsgID int, uid int64) {
-	kb := tgbotapi.NewInlineKeyboardMarkup(
-		tgbotapi.NewInlineKeyboardRow(
-			// Сразу задаём и место и единицу:
-			tgbotapi.NewInlineKeyboardButtonData("Зал (часы)", fmt.Sprintf("adm:subs:pu:%d:hall:hour", uid)),
-			tgbotapi.NewInlineKeyboardButtonData("Кабинет (дни)", fmt.Sprintf("adm:subs:pu:%d:cabinet:day", uid)),
-		),
-		navKeyboard(true, true).InlineKeyboard[0],
-	)
-	b.send(tgbotapi.NewEditMessageTextAndMarkup(chatID, editMsgID, "Выберите помещение:", kb))
-}
-
-// clearPrevStep убрать inline-кнопки у прошлого шага, если он был
-func (b *Bot) clearPrevStep(ctx context.Context, chatID int64) {
-	st, _ := b.states.Get(ctx, chatID)
-	if st == nil || st.Payload == nil {
-		return
-	}
-	if v, ok := st.Payload["last_mid"]; ok {
-		mid := int(v.(float64)) // payload хранится через JSON
-		// просто чистим markup, текст оставляем как есть
-		rm := tgbotapi.InlineKeyboardMarkup{InlineKeyboard: [][]tgbotapi.InlineKeyboardButton{}}
-		b.send(tgbotapi.NewEditMessageReplyMarkup(chatID, mid, rm))
-	}
-}
-
-// saveLastStep сохранить id текущего бот-сообщения как «последний»
-func (b *Bot) saveLastStep(ctx context.Context, chatID int64, nextState dialog.State, payload dialog.Payload, newMID int) {
-	if payload == nil {
-		payload = dialog.Payload{}
-	}
-	payload["last_mid"] = float64(newMID)
-	_ = b.states.Set(ctx, chatID, nextState, payload)
 }
 
 // notifyLowOrNegativeBatch — собирает по складам/категориям и шлёт одним сообщением
