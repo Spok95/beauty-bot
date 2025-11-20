@@ -769,17 +769,6 @@ func (b *Bot) handleAdmRentMaterialsReport(
 	return nil
 }
 
-func navKeyboard(back bool, cancel bool) tgbotapi.InlineKeyboardMarkup {
-	row := []tgbotapi.InlineKeyboardButton{}
-	if back {
-		row = append(row, tgbotapi.NewInlineKeyboardButtonData("⬅️ Назад", "nav:back"))
-	}
-	if cancel {
-		row = append(row, tgbotapi.NewInlineKeyboardButtonData("✖️ Отменить", "nav:cancel"))
-	}
-	return tgbotapi.NewInlineKeyboardMarkup(row)
-}
-
 func (b *Bot) editTextAndClear(chatID int64, messageID int, text string) {
 	edit := tgbotapi.NewEditMessageTextAndMarkup(
 		chatID, messageID, text,
@@ -803,60 +792,6 @@ func (b *Bot) askFIO(chatID int64) {
 	m := tgbotapi.NewMessage(chatID, "Введите, пожалуйста, ФИО одной строкой.")
 	m.ReplyMarkup = kb
 	b.send(m)
-}
-
-func roleKeyboard() tgbotapi.InlineKeyboardMarkup {
-	return tgbotapi.NewInlineKeyboardMarkup(
-		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("Мастер", "role:master"),
-			tgbotapi.NewInlineKeyboardButtonData("Администратор", "role:administrator"),
-		),
-		navKeyboard(true, true).InlineKeyboard[0],
-	)
-}
-
-func confirmKeyboard() tgbotapi.InlineKeyboardMarkup {
-	return tgbotapi.NewInlineKeyboardMarkup(
-		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("📨 Отправить", "rq:send"),
-		),
-		navKeyboard(true, true).InlineKeyboard[0],
-	)
-}
-
-// adminReplyKeyboard Нижняя панель (ReplyKeyboard) для админа
-func adminReplyKeyboard() tgbotapi.ReplyKeyboardMarkup {
-	return tgbotapi.ReplyKeyboardMarkup{
-		ResizeKeyboard: true,
-		Keyboard: [][]tgbotapi.KeyboardButton{
-			{tgbotapi.NewKeyboardButton("Склады")},
-			{tgbotapi.NewKeyboardButton("Категории"), tgbotapi.NewKeyboardButton("Материалы")},
-			{tgbotapi.NewKeyboardButton("Остатки"), tgbotapi.NewKeyboardButton("Поставки")},
-			{tgbotapi.NewKeyboardButton("Установка цен"), tgbotapi.NewKeyboardButton("Установка тарифов")},
-			{tgbotapi.NewKeyboardButton("Аренда и Расходы материалов по мастерам")},
-		},
-	}
-}
-
-func masterReplyKeyboard() tgbotapi.ReplyKeyboardMarkup {
-	return tgbotapi.ReplyKeyboardMarkup{
-		ResizeKeyboard: true,
-		Keyboard: [][]tgbotapi.KeyboardButton{
-			{tgbotapi.NewKeyboardButton("Расход/Аренда")},
-			{tgbotapi.NewKeyboardButton("Просмотр остатков")},
-			{tgbotapi.NewKeyboardButton("Мои абонементы"), tgbotapi.NewKeyboardButton("Купить абонемент")},
-		},
-	}
-}
-
-func salonAdminReplyKeyboard() tgbotapi.ReplyKeyboardMarkup {
-	return tgbotapi.ReplyKeyboardMarkup{
-		ResizeKeyboard: true,
-		Keyboard: [][]tgbotapi.KeyboardButton{
-			{tgbotapi.NewKeyboardButton("Категории"), tgbotapi.NewKeyboardButton("Материалы")},
-			{tgbotapi.NewKeyboardButton("Остатки"), tgbotapi.NewKeyboardButton("Поставки")},
-		},
-	}
 }
 
 // Бейдж активности
@@ -1068,16 +1003,6 @@ func (b *Bot) showMaterialItemMenu(ctx context.Context, chatID int64, editMsgID 
 	)
 
 	b.send(tgbotapi.NewEditMessageTextAndMarkup(chatID, editMsgID, text, kb))
-}
-
-func (b *Bot) unitKeyboard(id int64) tgbotapi.InlineKeyboardMarkup {
-	return tgbotapi.NewInlineKeyboardMarkup(
-		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("pcs", fmt.Sprintf("adm:mat:unit:set:%d:pcs", id)),
-			tgbotapi.NewInlineKeyboardButtonData("g", fmt.Sprintf("adm:mat:unit:set:%d:g", id)),
-		),
-		navKeyboard(true, true).InlineKeyboard[0],
-	)
 }
 
 func (b *Bot) showCategoryPick(ctx context.Context, chatID int64, editMsgID int) {
@@ -2121,16 +2046,6 @@ func (b *Bot) saveLastStep(ctx context.Context, chatID int64, nextState dialog.S
 	}
 	payload["last_mid"] = float64(newMID)
 	_ = b.states.Set(ctx, chatID, nextState, payload)
-}
-
-func (b *Bot) subBuyPlaceKeyboard() tgbotapi.InlineKeyboardMarkup {
-	return tgbotapi.NewInlineKeyboardMarkup(
-		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("Общий зал (часы)", "subbuy:place:hall"),
-			tgbotapi.NewInlineKeyboardButtonData("Кабинет (дни)", "subbuy:place:cabinet"),
-		),
-		navKeyboard(false, true).InlineKeyboard[0],
-	)
 }
 
 // maybeNotifyLowOrNegative Информирование при минусовом/низком остатке (только для материалов в граммах)
