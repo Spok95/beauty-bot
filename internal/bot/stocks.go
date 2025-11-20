@@ -520,3 +520,110 @@ func (b *Bot) getConsumablesWarehouseID(ctx context.Context) (int64, error) {
 	}
 	return 0, fmt.Errorf("склад Расходники не найден/не активен")
 }
+
+// exportWarehouseStocksExcel выгружает текущие остатки склада в Excel.
+func (b *Bot) exportWarehouseStocksExcel(ctx context.Context, chatID int64, msgID int, whID int64) {
+	// 1) склад
+	wh, err := b.catalog.GetWarehouseByID(ctx, whID)
+	if err != nil || wh == nil {
+		b.editTextAndClear(chatID, msgID, "Склад не найден")
+		return
+	}
+
+	// 2) материалы с балансами
+	items, err := b.materials.ListWithBalanceByWarehouse(ctx, whID)
+	if err != nil {
+		b.editTextAndClear(chatID, msgID, "Ошибка загрузки материалов")
+		return
+	}
+	if len(items) == 0 {
+		b.editTextAndClear(chatID, msgID, "На этом складе нет материалов")
+		return
+	}
+
+	// 3) категории
+	cats, err := b.catalog.ListCategories(ctx)
+	if err != nil {
+		b.editTextAndClear(chatID, msgID, "Ошибка загрузки категорий")
+		return
+	}
+	catNames := make(map[int64]string, len(cats))
+	for _, c := range cats {
+		catNames[c.ID] = c.Name
+	}
+
+	// 4) Excel
+	f := excelize.NewFile()
+	defer func() { _ = f.Close() }()
+
+	sheet := f.GetSheetName(f.GetActiveSheetIndex())
+
+	// заголовок
+	header := []interface{}{
+		"warehouse_id",
+		"warehouse_name",
+		"category_id",
+		"category_name",
+		"material_id",
+		"material_name",
+		"unit",
+		"qty", // текущий остаток; админ может изменить на фактический
+	}
+	if err := f.SetSheetRow(sheet, "A1", &header); err != nil {
+		b.editTextAndClear(chatID, msgID, "Ошибка формирования файла (заголовок)")
+		return
+	}
+
+	// строки
+	row := 2
+	for _, it := range items {
+		catName := catNames[it.CategoryID]
+		excelRow := []interface{}{
+			wh.ID,
+			wh.Name,
+			it.CategoryID,
+			catName,
+			it.ID,
+			it.Name,
+			string(it.Unit),
+			it.Balance, // текущий остаток
+		}
+		cell, err := excelize.CoordinatesToCellName(1, row)
+		if err != nil {
+			b.editTextAndClear(chatID, msgID, "Ошибка формирования файла (ячейки)")
+			return
+		}
+		if err := f.SetSheetRow(sheet, cell, &excelRow); err != nil {
+			b.editTextAndClear(chatID, msgID, "Ошибка формирования файла (строки)")
+			return
+		}
+		row++
+	}
+
+	// 5) в буфер
+	buf := &bytes.Buffer{}
+	if err := f.Write(buf); err != nil {
+		b.editTextAndClear(chatID, msgID, "Ошибка записи файла")
+		return
+	}
+
+	// 6) отправка в Telegram
+	fileName := fmt.Sprintf("stocks_%s_%s.xlsx",
+		wh.Name,
+		time.Now().Format("20060102_150405"),
+	)
+
+	doc := tgbotapi.NewDocument(chatID, tgbotapi.FileBytes{
+		Name:  fileName,
+		Bytes: buf.Bytes(),
+	})
+	doc.Caption = fmt.Sprintf(
+		"Остатки склада «%s».\nПри необходимости измените колонку qty и загрузите файл через «Загрузить остатки».",
+		wh.Name,
+	)
+
+	b.send(doc)
+
+	b.editTextWithNav(chatID, msgID,
+		fmt.Sprintf("Сформирован файл с остатками для склада «%s».", wh.Name))
+}
