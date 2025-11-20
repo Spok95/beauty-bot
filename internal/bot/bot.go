@@ -782,17 +782,6 @@ func (b *Bot) editTextWithNav(chatID int64, messageID int, text string) {
 	b.send(edit)
 }
 
-func (b *Bot) askFIO(chatID int64) {
-	kb := tgbotapi.NewInlineKeyboardMarkup(
-		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("✖️ Отменить", "nav:cancel"),
-		),
-	)
-	m := tgbotapi.NewMessage(chatID, "Введите, пожалуйста, ФИО одной строкой.")
-	m.ReplyMarkup = kb
-	b.send(m)
-}
-
 // Бейдж активности
 func badge(b bool) string {
 	if b {
