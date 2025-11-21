@@ -41,21 +41,6 @@ func (r *Repo) GetByID(ctx context.Context, id int64) (*Material, error) {
 	return &m, nil
 }
 
-func (r *Repo) GetByName(ctx context.Context, name string) (*Material, error) {
-	row := r.pool.QueryRow(ctx, `
-		SELECT id, name, category_id, unit, active, created_at
-		FROM materials WHERE name=$1
-	`, name)
-	var m Material
-	if err := row.Scan(&m.ID, &m.Name, &m.CategoryID, &m.Unit, &m.Active, &m.CreatedAt); err != nil {
-		if err == pgx.ErrNoRows {
-			return nil, nil
-		}
-		return nil, err
-	}
-	return &m, nil
-}
-
 func (r *Repo) UpdateName(ctx context.Context, id int64, name string) (*Material, error) {
 	row := r.pool.QueryRow(ctx, `
 		UPDATE materials SET name=$2 WHERE id=$1
@@ -114,30 +99,6 @@ func (r *Repo) List(ctx context.Context, onlyActive bool) ([]Material, error) {
 			return nil, err
 		}
 		out = append(out, m)
-	}
-	return out, nil
-}
-
-/* Balances (read-only for now) */
-
-func (r *Repo) ListBalancesByWarehouse(ctx context.Context, warehouseID int64) ([]Balance, error) {
-	rows, err := r.pool.Query(ctx, `
-		SELECT warehouse_id, material_id, qty
-		FROM balances
-		WHERE warehouse_id = $1
-		ORDER BY material_id
-	`, warehouseID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []Balance
-	for rows.Next() {
-		var b Balance
-		if err := rows.Scan(&b.WarehouseID, &b.MaterialID, &b.Qty); err != nil {
-			return nil, err
-		}
-		out = append(out, b)
 	}
 	return out, nil
 }

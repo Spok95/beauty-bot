@@ -39,7 +39,7 @@ func (b *Bot) showSubsPickUser(ctx context.Context, chatID int64, editMsgID int)
 
 	rows := [][]tgbotapi.InlineKeyboardButton{}
 	for _, u := range list {
-		title := strings.TrimSpace(u.Username) // в Username у нас «ФИО/отображаемое имя»
+		title := strings.TrimSpace(u.Username)
 		if title == "" {
 			title = fmt.Sprintf("id %d", u.ID)
 		}

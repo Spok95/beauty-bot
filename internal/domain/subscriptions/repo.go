@@ -13,32 +13,6 @@ type Repo struct{ db *pgxpool.Pool }
 
 func NewRepo(db *pgxpool.Pool) *Repo { return &Repo{db: db} }
 
-func (r *Repo) GetActive(ctx context.Context, userID int64, place, unit, month string) (*Subscription, error) {
-	const q = `SELECT id,user_id,place,unit,month,plan_limit,total_qty,used_qty,created_at,updated_at
-	           FROM subscriptions
-	           WHERE user_id=$1 AND place=$2 AND unit=$3 AND month=$4
-	             AND total_qty > used_qty
-	           ORDER BY created_at
-	           LIMIT 1`
-	row := r.db.QueryRow(ctx, q, userID, place, unit, month)
-	var s Subscription
-	if err := row.Scan(
-		&s.ID,
-		&s.UserID,
-		&s.Place,
-		&s.Unit,
-		&s.Month,
-		&s.PlanLimit,
-		&s.TotalQty,
-		&s.UsedQty,
-		&s.CreatedAt,
-		&s.UpdatedAt,
-	); err != nil {
-		return nil, err
-	}
-	return &s, nil
-}
-
 func (r *Repo) ListByUserMonth(ctx context.Context, userID int64, month string) ([]Subscription, error) {
 	const q = `SELECT id,user_id,place,unit,month,plan_limit,total_qty,used_qty,created_at,updated_at
 	           FROM subscriptions

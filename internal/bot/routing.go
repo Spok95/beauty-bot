@@ -38,21 +38,21 @@ func (b *Bot) handleCommand(ctx context.Context, msg *tgbotapi.Message) {
 		// авто-админ
 		if msg.From.ID == b.adminChat && (u.Role != users.RoleAdmin || u.Status != users.StatusApproved) {
 			if _, err2 := b.users.Approve(ctx, msg.From.ID, users.RoleAdmin); err2 == nil {
-				m := tgbotapi.NewMessage(chatID, "Привет, админ! Для управления ботом, ты можешь воспользоваться меню с кнопками или посмотреть список команд /help и работать через них.")
+				m := tgbotapi.NewMessage(chatID, "Привет, админ! Для управления ботом, ты можешь воспользоваться меню с кнопками и работать через них.")
 				m.ReplyMarkup = adminReplyKeyboard()
 				b.send(m)
 				return
 			}
 		}
 		if u.Role == users.RoleAdmin && u.Status == users.StatusApproved {
-			m := tgbotapi.NewMessage(chatID, "Привет, админ! Для управления ботом, ты можешь воспользоваться меню с кнопками или посмотреть список команд /help и работать через них.")
+			m := tgbotapi.NewMessage(chatID, "Привет, админ! Для управления ботом, ты можешь воспользоваться меню с кнопками и работать через них.")
 			m.ReplyMarkup = adminReplyKeyboard()
 			b.send(m)
 			return
 		}
 
 		if u.Role == users.RoleMaster && u.Status == users.StatusApproved {
-			m := tgbotapi.NewMessage(chatID, "Готово! Для учёта материалов и аренды жми «Расход/Аренда» или используй /rent.")
+			m := tgbotapi.NewMessage(chatID, "Готово! Для учёта материалов и аренды жми «Расход/Аренда».")
 			m.ReplyMarkup = masterReplyKeyboard()
 			b.send(m)
 			return
@@ -60,7 +60,7 @@ func (b *Bot) handleCommand(ctx context.Context, msg *tgbotapi.Message) {
 
 		if u.Role == users.RoleAdministrator && u.Status == users.StatusApproved {
 			m := tgbotapi.NewMessage(chatID,
-				"Готово! Для работы со складом «Клиентский» используйте кнопки снизу или /help.")
+				"Готово! Для работы со складом «Клиентский» используйте кнопки снизу.")
 			m.ReplyMarkup = salonAdminReplyKeyboard()
 			b.send(m)
 			return
@@ -68,7 +68,7 @@ func (b *Bot) handleCommand(ctx context.Context, msg *tgbotapi.Message) {
 
 		switch u.Status {
 		case users.StatusApproved:
-			b.send(tgbotapi.NewMessage(chatID, "Вы уже подтверждены. /help — список команд."))
+			b.send(tgbotapi.NewMessage(chatID, "Вы уже подтверждены."))
 		case users.StatusRejected:
 			_ = b.states.Set(ctx, chatID, dialog.StateAwaitFIO, dialog.Payload{})
 			b.askFIO(chatID)
