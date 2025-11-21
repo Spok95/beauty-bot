@@ -9,22 +9,32 @@ import (
 
 type Server struct {
 	srv *http.Server
+	mux *http.ServeMux
 }
 
 func New(addr string, exposeMetrics bool) *Server {
 	mux := http.NewServeMux()
 
-	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "text/plain")
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("OK"))
 	})
 
 	if exposeMetrics {
 		mux.Handle("/metrics", promhttp.Handler())
 	}
 
-	return &Server{srv: &http.Server{Addr: addr, Handler: mux}}
+	return &Server{
+		srv: &http.Server{
+			Addr:    addr,
+			Handler: mux,
+		},
+		mux: mux,
+	}
+}
+
+// Handle позволяет в main регистрировать свои ручки.
+func (s *Server) Handle(pattern string, handler http.Handler) {
+	s.mux.Handle(pattern, handler)
 }
 
 func (s *Server) Start() error {
