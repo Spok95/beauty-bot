@@ -29,6 +29,10 @@ type Config struct {
 	Metrics struct {
 		Enabled bool
 	} `mapstructure:"metrics"`
+
+	Payments struct {
+		BaseURL string `mapstructure:"base_url"`
+	} `mapstructure:"payments"`
 }
 
 func Load(path string) (Config, error) {

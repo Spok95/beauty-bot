@@ -102,10 +102,9 @@ func main() {
 
 	srv := httpx.New(cfg.HTTP.Addr, cfg.Metrics.Enabled)
 
-	// payments service: базовый URL нашего HTTP-сервера.
-	// Для локалки: http://localhost + порт из cfg.HTTP.Addr (например, ":8080").
-	baseURL := "http://localhost" + cfg.HTTP.Addr
-	paymentsSvc := paymentsx.NewService(baseURL)
+	// базовый URL платёжки берём из конфига (payments.base_url)
+	paymentsBaseURL := cfg.Payments.BaseURL
+	paymentsSvc := paymentsx.NewService(paymentsBaseURL)
 
 	// /payments/pay — эмуляция успешной оплаты
 	srv.Handle("/payments/pay", paymentsx.NewHandler(log, consRepo))
