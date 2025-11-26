@@ -32,7 +32,13 @@ func (b *Bot) showMaterialList(ctx context.Context, chatID int64, editMsgID int)
 	}
 	rows := [][]tgbotapi.InlineKeyboardButton{}
 	for _, m := range items {
-		label := fmt.Sprintf("%s %s", badge(m.Active), m.Name)
+		// имя для списка: если есть бренд, показываем "Бренд / Название"
+		name := m.Name
+		if m.Brand != "" {
+			name = fmt.Sprintf("%s / %s", m.Brand, m.Name)
+		}
+
+		label := fmt.Sprintf("%s %s", badge(m.Active), name)
 		rows = append(rows, tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData(label, fmt.Sprintf("adm:mat:menu:%d", m.ID)),
 		))
@@ -77,9 +83,15 @@ func (b *Bot) showMaterialItemMenu(ctx context.Context, chatID int64, editMsgID 
 		catName = c.Name
 	}
 
+	// Отображаемое имя: с брендом, если он есть
+	matName := m.Name
+	if m.Brand != "" {
+		matName = fmt.Sprintf("%s / %s", m.Brand, m.Name)
+	}
+
 	text := fmt.Sprintf(
 		"Материал: %s %s\nКатегория: %s\nЕд.: %s\nСтатус: %v",
-		badge(m.Active), m.Name, catName, m.Unit, m.Active,
+		badge(m.Active), matName, catName, m.Unit, m.Active,
 	)
 
 	b.send(tgbotapi.NewEditMessageTextAndMarkup(chatID, editMsgID, text, kb))
