@@ -236,7 +236,11 @@ func (b *Bot) showSuppliesCart(ctx context.Context, chatID int64, editMsgID *int
 		price := it["price"].(float64)
 		name := fmt.Sprintf("ID:%d", matID)
 		if m, _ := b.materials.GetByID(ctx, matID); m != nil {
-			name = m.Name
+			if m.Brand != "" {
+				name = fmt.Sprintf("%s / %s", m.Brand, m.Name)
+			} else {
+				name = m.Name
+			}
 		}
 		lineTotal := float64(qty) * price
 		total += lineTotal
