@@ -52,12 +52,14 @@ const (
 	StateSupImportFile   State = "sup_import_file" // ожидание файла с поступлением (используем позже)
 
 	// Расход/Аренда (мастер)
-	StateConsPlace   State = "cons_place" // выбор: зал/кабинет
-	StateConsQty     State = "cons_qty"   // кол-во часов/дней (int)
-	StateConsMatPick State = "cons_mat_pick"
-	StateConsMatQty  State = "cons_mat_qty" // int (г/шт)
-	StateConsCart    State = "cons_cart"    // корзина материалов
-	StateConsSummary State = "cons_summary" // сводка и итог
+	StateConsPlace        State = "cons_place"       // выбор: зал/кабинет
+	StateConsQty          State = "cons_qty"         // кол-во часов/дней (int)
+	StateConsMatSearch    State = "cons_mat_search"  // меню: выбор способа поиска материала
+	StateConsSearchByName State = "cons_search_name" // ввод строки для поиска по названию
+	StateConsMatPick      State = "cons_mat_pick"    // список найденных материалов
+	StateConsMatQty       State = "cons_mat_qty"     // int (г/шт)
+	StateConsCart         State = "cons_cart"        // корзина материалов
+	StateConsSummary      State = "cons_summary"
 
 	// Абонементы (админ)
 	StateAdmSubsMenu          State = "adm_subs_menu"

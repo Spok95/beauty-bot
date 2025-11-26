@@ -2,6 +2,7 @@ package materials
 
 import (
 	"context"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -169,6 +170,53 @@ func (r *Repo) GetPrice(ctx context.Context, id int64) (float64, error) {
 		return 0, err
 	}
 	return p, nil
+}
+
+// SearchByName ищет материалы по части названия/бренда, без учёта регистра.
+func (r *Repo) SearchByName(ctx context.Context, q string, onlyActive bool) ([]Material, error) {
+	q = strings.TrimSpace(q)
+	if q == "" {
+		return nil, nil
+	}
+	like := "%" + strings.ToLower(q) + "%"
+
+	baseSQL := `
+		SELECT id, name, category_id, brand, unit, active, created_at, price_per_unit
+		FROM materials
+		WHERE (LOWER(name) LIKE $1 OR LOWER(brand) LIKE $1)
+	`
+
+	var rows pgx.Rows
+	var err error
+
+	if onlyActive {
+		rows, err = r.pool.Query(ctx, baseSQL+` AND active = TRUE ORDER BY brand, name`, like)
+	} else {
+		rows, err = r.pool.Query(ctx, baseSQL+` ORDER BY brand, name`, like)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []Material
+	for rows.Next() {
+		var m Material
+		if err := rows.Scan(
+			&m.ID,
+			&m.Name,
+			&m.CategoryID,
+			&m.Brand,
+			&m.Unit,
+			&m.Active,
+			&m.CreatedAt,
+			&m.PricePerUnit,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, nil
 }
 
 // ListBrandsByCategory возвращает уникальные бренды по категории материалов.
