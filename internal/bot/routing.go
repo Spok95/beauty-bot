@@ -450,7 +450,7 @@ func (b *Bot) handleStateMessage(ctx context.Context, msg *tgbotapi.Message) {
 		}
 		cidAny := st.Payload["cat_id"]
 		catID := int64(cidAny.(float64))
-		if _, err := b.materials.Create(ctx, name, catID, materials.UnitG); err != nil {
+		if _, err := b.materials.Create(ctx, name, catID, "", materials.UnitG); err != nil {
 			b.send(tgbotapi.NewMessage(chatID, "Ошибка при создании материала"))
 			return
 		}
