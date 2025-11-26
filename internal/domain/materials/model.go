@@ -13,6 +13,7 @@ type Material struct {
 	ID           int64
 	Name         string
 	CategoryID   int64
+	Brand        string
 	Unit         Unit
 	Active       bool
 	CreatedAt    time.Time
