@@ -53,9 +53,14 @@ func (b *Bot) showStockItem(ctx context.Context, chatID int64, editMsgID int, wh
 		navKeyboard(true, true).InlineKeyboard[0],
 	)
 
+	matName := m.Name
+	if m.Brand != "" {
+		matName = fmt.Sprintf("%s / %s", m.Brand, m.Name)
+	}
+
 	text := fmt.Sprintf(
 		"Склад: %s\nМатериал: %s\nОстаток: %.3f %s",
-		whTitle, m.Name, qty, m.Unit,
+		whTitle, matName, qty, m.Unit,
 	)
 
 	b.send(tgbotapi.NewEditMessageTextAndMarkup(chatID, editMsgID, text, kb))
@@ -165,7 +170,11 @@ func (b *Bot) showStockMaterialList(ctx context.Context, chatID int64, editMsgID
 	}
 	rows := [][]tgbotapi.InlineKeyboardButton{}
 	for _, it := range items {
-		label := fmt.Sprintf("%s: %d %s", it.Name, it.Balance, it.Unit)
+		name := it.Name
+		if it.Brand != "" {
+			name = fmt.Sprintf("%s / %s", it.Brand, it.Name)
+		}
+		label := fmt.Sprintf("%s: %d %s", name, it.Balance, it.Unit)
 		if it.Unit == materials.UnitG {
 			if it.Balance <= 0 {
 				label = "⚠️ " + label + " — закончились"
