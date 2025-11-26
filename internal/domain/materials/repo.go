@@ -106,6 +106,7 @@ func (r *Repo) List(ctx context.Context, onlyActive bool) ([]Material, error) {
 type MatWithBal struct {
 	ID         int64
 	Name       string
+	Brand      string
 	Unit       Unit
 	Balance    int64
 	CategoryID int64
@@ -113,7 +114,7 @@ type MatWithBal struct {
 
 func (r *Repo) ListWithBalanceByWarehouse(ctx context.Context, warehouseID int64) ([]MatWithBal, error) {
 	rows, err := r.pool.Query(ctx, `
-		SELECT m.id, m.name, m.unit, COALESCE(b.qty,0), m.category_id
+		SELECT m.id, m.name, m.brand, m.unit, COALESCE(b.qty,0), m.category_id
 		FROM materials m
 		LEFT JOIN balances b ON b.material_id = m.id AND b.warehouse_id = $1
 		ORDER BY m.name
@@ -126,7 +127,7 @@ func (r *Repo) ListWithBalanceByWarehouse(ctx context.Context, warehouseID int64
 	var out []MatWithBal
 	for rows.Next() {
 		var it MatWithBal
-		if err := rows.Scan(&it.ID, &it.Name, &it.Unit, &it.Balance, &it.CategoryID); err != nil {
+		if err := rows.Scan(&it.ID, &it.Name, &it.Brand, &it.Unit, &it.Balance, &it.CategoryID); err != nil {
 			return nil, err
 		}
 		out = append(out, it)
