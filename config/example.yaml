@@ -10,6 +10,9 @@ telegram:
 http:
   addr: ":8080"
 
+payments:
+  base_url: "https://example.com"
+
 postgres:
   dsn: "postgres://postgres:postgres@127.0.0.1:5433/postgres?sslmode=disable"
 

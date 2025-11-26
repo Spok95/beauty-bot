@@ -21,6 +21,7 @@ import (
 	"github.com/Spok95/beauty-bot/internal/infra/db"
 	httpx "github.com/Spok95/beauty-bot/internal/infra/http"
 	"github.com/Spok95/beauty-bot/internal/infra/logger"
+	paymentsx "github.com/Spok95/beauty-bot/internal/infra/payments"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"github.com/subosito/gotenv"
 
@@ -100,6 +101,14 @@ func main() {
 	subsRepo := subs.NewRepo(pool)
 
 	srv := httpx.New(cfg.HTTP.Addr, cfg.Metrics.Enabled)
+
+	// базовый URL платёжки берём из конфига (payments.base_url)
+	paymentsBaseURL := cfg.Payments.BaseURL
+	paymentsSvc := paymentsx.NewService(paymentsBaseURL)
+
+	// /payments/pay — эмуляция успешной оплаты
+	srv.Handle("/payments/pay", paymentsx.NewHandler(log, consRepo))
+
 	go func() {
 		if err := srv.Start(); err != nil && err.Error() != "http: Server closed" {
 			log.Error("http server error", "err", err)
@@ -116,7 +125,7 @@ func main() {
 		api.Debug = true
 	}
 
-	tg := bot.New(api, log, usersRepo, stateRepo, cfg.Telegram.AdminChatID, catalogRepo, materialsRepo, inventoryRepo, consRepo, subsRepo)
+	tg := bot.New(api, log, usersRepo, stateRepo, cfg.Telegram.AdminChatID, catalogRepo, materialsRepo, inventoryRepo, consRepo, subsRepo, paymentsSvc)
 
 	go func() {
 		if err := tg.Run(ctx, cfg.Telegram.RequestTimeoutSec); err != nil {

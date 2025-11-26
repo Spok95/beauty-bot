@@ -483,3 +483,23 @@ ORDER BY
 	}
 	return res, rows.Err()
 }
+
+// SetInvoicePaymentLink устанавливает/обновляет payment_link для инвойса.
+func (r *Repo) SetInvoicePaymentLink(ctx context.Context, invoiceID int64, link string) error {
+	_, err := r.pool.Exec(ctx, `
+		UPDATE invoices
+		SET payment_link = $1
+		WHERE id = $2
+	`, link, invoiceID)
+	return err
+}
+
+// SetInvoiceStatus меняет статус инвойса (pending/paid/canceled).
+func (r *Repo) SetInvoiceStatus(ctx context.Context, invoiceID int64, status string) error {
+	_, err := r.pool.Exec(ctx, `
+		UPDATE invoices
+		SET status = $1
+		WHERE id = $2
+	`, status, invoiceID)
+	return err
+}

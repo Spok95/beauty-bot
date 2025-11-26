@@ -2345,8 +2345,36 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 			_ = b.cons.AddItem(ctx, sid, matID, float64(q), price, cost)
 			pairs = append(pairs, [2]int64{whID, matID})
 		}
+
 		// инвойс (pending)
-		_, _ = b.cons.CreateInvoice(ctx, u.ID, sid, total)
+		invoiceID, err := b.cons.CreateInvoice(ctx, u.ID, sid, total)
+		if err != nil {
+			b.editTextAndClear(fromChat, cb.Message.MessageID, "Не удалось создать счёт.")
+			_ = b.answerCallback(cb, "Ошибка", true)
+			return
+		}
+
+		// пробуем сформировать ссылку на оплату (эмулятор платежей)
+		var payURL string
+		if b.payments != nil {
+			// здесь НЕ используем placeRU/unitRU, только тех.описание
+			desc := fmt.Sprintf("Расход/аренда: place=%s, qty=%d %s", place, qty, unit)
+
+			if url, err := b.payments.CreatePayment(ctx, invoiceID, total, desc); err != nil {
+				b.log.Error("failed to create payment link",
+					"invoice_id", invoiceID,
+					"err", err,
+				)
+			} else {
+				payURL = url
+				if err := b.cons.SetInvoicePaymentLink(ctx, invoiceID, payURL); err != nil {
+					b.log.Error("failed to store payment link",
+						"invoice_id", invoiceID,
+						"err", err,
+					)
+				}
+			}
+		}
 
 		b.notifyLowOrNegativeBatch(ctx, pairs)
 		// уведомление админу о подтверждённой сессии расхода/аренды
@@ -2390,7 +2418,29 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 			b.send(tgbotapi.NewMessage(b.adminChat, sb.String()))
 		}
 
-		b.editTextAndClear(fromChat, cb.Message.MessageID, "Сессия подтверждена. Списание материалов и расчёт завершены.")
+		// сообщение мастеру о завершении расчёта
+		b.editTextAndClear(fromChat, cb.Message.MessageID,
+			"Сессия подтверждена. Списание материалов и расчёт завершены.")
+
+		// если сформировалась ссылка на оплату – даём кнопку мастеру
+		if payURL != "" {
+			kb := tgbotapi.NewInlineKeyboardMarkup(
+				tgbotapi.NewInlineKeyboardRow(
+					tgbotapi.NewInlineKeyboardButtonURL(
+						fmt.Sprintf("Оплатить %.2f ₽", total),
+						payURL,
+					),
+				),
+				// навигация назад/в меню — как обычно
+				navKeyboard(true, true).InlineKeyboard[0],
+			)
+
+			msg := tgbotapi.NewMessage(fromChat,
+				fmt.Sprintf("К оплате: %.2f ₽.\nНажмите кнопку ниже, чтобы перейти к оплате.", total))
+			msg.ReplyMarkup = kb
+			b.send(msg)
+		}
+
 		_ = b.states.Set(ctx, fromChat, dialog.StateIdle, dialog.Payload{})
 		_ = b.answerCallback(cb, "Готово", false)
 		return
@@ -2413,7 +2463,6 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 		_ = b.answerCallback(cb, "Ок", false)
 		return
 
-		// Покупка абонемента — выбор места
 		// Покупка абонемента — выбор места
 	case strings.HasPrefix(data, "subbuy:place:"):
 		place := strings.TrimPrefix(data, "subbuy:place:")

@@ -8,6 +8,7 @@ import (
 	"github.com/Spok95/beauty-bot/internal/domain/inventory"
 	"github.com/Spok95/beauty-bot/internal/domain/materials"
 	subsdomain "github.com/Spok95/beauty-bot/internal/domain/subscriptions"
+	payments "github.com/Spok95/beauty-bot/internal/infra/payments"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 
 	"github.com/Spok95/beauty-bot/internal/dialog"
@@ -29,19 +30,22 @@ type Bot struct {
 	inventory *inventory.Repo
 	cons      *consumption.Repo
 	subs      *subsdomain.Repo
+	payments  *payments.Service
 }
 
 func New(api *tgbotapi.BotAPI, log *slog.Logger,
 	usersRepo *users.Repo, statesRepo *dialog.Repo,
 	adminChatID int64, catalogRepo *catalog.Repo,
 	materialsRepo *materials.Repo, inventoryRepo *inventory.Repo,
-	consRepo *consumption.Repo, subsRepo *subsdomain.Repo) *Bot {
+	consRepo *consumption.Repo, subsRepo *subsdomain.Repo,
+	paymentsSvc *payments.Service) *Bot {
 
 	return &Bot{
 		api: api, log: log, users: usersRepo, states: statesRepo,
 		adminChat: adminChatID, catalog: catalogRepo,
 		materials: materialsRepo, inventory: inventoryRepo,
 		cons: consRepo, subs: subsRepo,
+		payments: paymentsSvc,
 	}
 }
 
