@@ -13,12 +13,12 @@ func NewRepo(pool *pgxpool.Pool) *Repo { return &Repo{pool: pool} }
 
 /* Materials CRUD */
 
-func (r *Repo) Create(ctx context.Context, name string, categoryID int64, unit Unit) (*Material, error) {
+func (r *Repo) Create(ctx context.Context, name string, categoryID int64, brand string, unit Unit) (*Material, error) {
 	row := r.pool.QueryRow(ctx, `
 		INSERT INTO materials (name, category_id, brand, unit, active)
-		VALUES ($1,$2,'',$3,$4)
+		VALUES ($1,$2,$3,$4,$5)
 		RETURNING id, name, category_id, brand, unit, active, created_at, price_per_unit
-	`, name, categoryID, unit, true)
+	`, name, categoryID, brand, unit, true)
 	var m Material
 	if err := row.Scan(&m.ID, &m.Name, &m.CategoryID, &m.Brand, &m.Unit, &m.Active, &m.CreatedAt, &m.PricePerUnit); err != nil {
 		return nil, err
