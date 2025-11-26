@@ -25,6 +25,7 @@ const (
 	StateAdmMatList    State = "adm_mat_list" // НОВОЕ: экран "Список материалов"
 	StateAdmMatItem    State = "adm_mat_item" // НОВОЕ: карточка конкретного материала
 	StateAdmMatPickCat State = "adm_mat_pick_cat"
+	StateAdmMatBrand   State = "adm_mat_brand"
 	StateAdmMatName    State = "adm_mat_name"
 	StateAdmMatUnit    State = "adm_mat_unit"
 	StateAdmMatRename  State = "adm_mat_rename"

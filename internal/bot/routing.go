@@ -442,6 +442,26 @@ func (b *Bot) handleStateMessage(ctx context.Context, msg *tgbotapi.Message) {
 		b.showCategoryMenu(chatID, nil)
 		return
 
+	case dialog.StateAdmMatBrand:
+		brand := strings.TrimSpace(msg.Text)
+		if brand == "-" {
+			brand = ""
+		}
+		// забираем cat_id из payload и кладём brand
+		cidAny, ok := st.Payload["cat_id"]
+		if !ok {
+			b.send(tgbotapi.NewMessage(chatID, "Сессия устарела, выберите категорию ещё раз."))
+			_ = b.states.Set(ctx, chatID, dialog.StateAdmMatMenu, dialog.Payload{})
+			b.showMaterialMenu(chatID, nil)
+			return
+		}
+		_ = b.states.Set(ctx, chatID, dialog.StateAdmMatName, dialog.Payload{
+			"cat_id": cidAny,
+			"brand":  brand,
+		})
+		b.send(tgbotapi.NewMessage(chatID, "Введите название материала сообщением."))
+		return
+
 	case dialog.StateAdmMatName:
 		name := strings.TrimSpace(msg.Text)
 		if name == "" {
@@ -450,7 +470,15 @@ func (b *Bot) handleStateMessage(ctx context.Context, msg *tgbotapi.Message) {
 		}
 		cidAny := st.Payload["cat_id"]
 		catID := int64(cidAny.(float64))
-		if _, err := b.materials.Create(ctx, name, catID, "", materials.UnitG); err != nil {
+
+		var brand string
+		if bAny, ok := st.Payload["brand"]; ok {
+			if bs, ok2 := bAny.(string); ok2 {
+				brand = bs
+			}
+		}
+
+		if _, err := b.materials.Create(ctx, name, catID, brand, materials.UnitG); err != nil {
 			b.send(tgbotapi.NewMessage(chatID, "Ошибка при создании материала"))
 			return
 		}
@@ -1480,8 +1508,9 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 
 	case strings.HasPrefix(data, "adm:mat:pickcat:"):
 		cid, _ := strconv.ParseInt(strings.TrimPrefix(data, "adm:mat:pickcat:"), 10, 64)
-		_ = b.states.Set(ctx, fromChat, dialog.StateAdmMatName, dialog.Payload{"cat_id": cid})
-		b.editTextWithNav(fromChat, cb.Message.MessageID, "Введите название материала сообщением.")
+		// Сохраняем выбранную категорию и переходим к вводу бренда
+		_ = b.states.Set(ctx, fromChat, dialog.StateAdmMatBrand, dialog.Payload{"cat_id": cid})
+		b.editTextWithNav(fromChat, cb.Message.MessageID, "Введите бренд материала (можно оставить пустым, отправив «-»).")
 		_ = b.answerCallback(cb, "Ок", false)
 		return
 
