@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 
+	"github.com/Spok95/beauty-bot/internal/domain/brands"
 	"github.com/Spok95/beauty-bot/internal/domain/consumption"
 	"github.com/Spok95/beauty-bot/internal/domain/inventory"
 	"github.com/Spok95/beauty-bot/internal/domain/materials"
@@ -27,6 +28,7 @@ type Bot struct {
 	adminChat int64
 	catalog   *catalog.Repo
 	materials *materials.Repo
+	brands    *brands.Repo
 	inventory *inventory.Repo
 	cons      *consumption.Repo
 	subs      *subsdomain.Repo
@@ -36,15 +38,17 @@ type Bot struct {
 func New(api *tgbotapi.BotAPI, log *slog.Logger,
 	usersRepo *users.Repo, statesRepo *dialog.Repo,
 	adminChatID int64, catalogRepo *catalog.Repo,
-	materialsRepo *materials.Repo, inventoryRepo *inventory.Repo,
+	materialsRepo *materials.Repo, brandsRepo *brands.Repo,
+	inventoryRepo *inventory.Repo,
 	consRepo *consumption.Repo, subsRepo *subsdomain.Repo,
 	paymentsSvc *payments.Service) *Bot {
 
 	return &Bot{
 		api: api, log: log, users: usersRepo, states: statesRepo,
 		adminChat: adminChatID, catalog: catalogRepo,
-		materials: materialsRepo, inventory: inventoryRepo,
-		cons: consRepo, subs: subsRepo,
+		materials: materialsRepo, brands: brandsRepo,
+		inventory: inventoryRepo,
+		cons:      consRepo, subs: subsRepo,
 		payments: paymentsSvc,
 	}
 }

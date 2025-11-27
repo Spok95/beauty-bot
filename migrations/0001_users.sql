@@ -29,28 +29,33 @@ CREATE TABLE IF NOT EXISTS material_categories (
                                                    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- MATERIAL BRANDS
+CREATE TABLE IF NOT EXISTS material_brands (
+                                               id          BIGSERIAL PRIMARY KEY,
+                                               category_id BIGINT      NOT NULL REFERENCES material_categories(id) ON DELETE RESTRICT,
+                                               name        TEXT        NOT NULL,
+                                               active      BOOLEAN     NOT NULL DEFAULT TRUE,
+                                               created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+                                               CONSTRAINT uq_material_brands_cat_name UNIQUE (category_id, name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_material_brands_cat ON material_brands(category_id);
+
 -- MATERIALS
 CREATE TABLE IF NOT EXISTS materials (
                                          id             BIGSERIAL     PRIMARY KEY,
                                          name           TEXT          NOT NULL,
                                          category_id    BIGINT        NOT NULL REFERENCES material_categories(id) ON DELETE RESTRICT,
-                                         brand          TEXT          NOT NULL DEFAULT '',
+                                         brand_id       BIGINT        NOT NULL REFERENCES material_brands(id) ON DELETE RESTRICT,
                                          unit           TEXT          NOT NULL DEFAULT 'pcs',
                                          price_per_unit NUMERIC(12,2) NOT NULL DEFAULT 0, -- ₽ за g / шт
                                          active         BOOLEAN       NOT NULL DEFAULT TRUE,
-                                         created_at     TIMESTAMPTZ   NOT NULL DEFAULT now()
+                                         created_at     TIMESTAMPTZ   NOT NULL DEFAULT now(),
+                                         CONSTRAINT uq_materials_brand_name UNIQUE (brand_id, name)
 );
 
--- уникальность материала в рамках категории + бренда
-CREATE UNIQUE INDEX IF NOT EXISTS uq_materials_category_brand_name
-    ON materials(category_id, brand, name);
-
--- обычные индексы для быстрых запросов
-CREATE INDEX IF NOT EXISTS idx_materials_category
-    ON materials(category_id);
-
-CREATE INDEX IF NOT EXISTS idx_materials_category_brand
-    ON materials(category_id, brand);
+CREATE INDEX IF NOT EXISTS idx_materials_category ON materials(category_id);
+CREATE INDEX IF NOT EXISTS idx_materials_brand ON materials(brand_id);
 
 -- BALANCES
 CREATE TABLE IF NOT EXISTS balances (
@@ -229,6 +234,7 @@ CREATE INDEX IF NOT EXISTS idx_subs_user_month ON subscriptions (user_id, month)
 -- +goose Down
 DROP TABLE IF EXISTS balances;
 DROP TABLE IF EXISTS materials;
+DROP TABLE IF EXISTS material_brands;
 DROP TABLE IF EXISTS material_categories;
 DROP TABLE IF EXISTS warehouses;
 DROP TABLE IF EXISTS users;

@@ -14,14 +14,24 @@ func NewRepo(pool *pgxpool.Pool) *Repo { return &Repo{pool: pool} }
 
 /* Materials CRUD */
 
-func (r *Repo) Create(ctx context.Context, name string, categoryID int64, brand string, unit Unit) (*Material, error) {
+func (r *Repo) Create(ctx context.Context, name string, categoryID, brandID int64, unit Unit) (*Material, error) {
 	row := r.pool.QueryRow(ctx, `
-		INSERT INTO materials (name, category_id, brand, unit, active)
-		VALUES ($1,$2,$3,$4,$5)
-		RETURNING id, name, category_id, brand, unit, active, created_at, price_per_unit
-	`, name, categoryID, brand, unit, true)
+		INSERT INTO materials (name, category_id, brand_id, unit, active)
+		VALUES ($1,$2,$3,$4,TRUE)
+		RETURNING id, name, category_id, brand_id, unit, active, created_at, price_per_unit
+	`, name, categoryID, brandID, unit)
+
 	var m Material
-	if err := row.Scan(&m.ID, &m.Name, &m.CategoryID, &m.Brand, &m.Unit, &m.Active, &m.CreatedAt, &m.PricePerUnit); err != nil {
+	if err := row.Scan(
+		&m.ID,
+		&m.Name,
+		&m.CategoryID,
+		&m.BrandID,
+		&m.Unit,
+		&m.Active,
+		&m.CreatedAt,
+		&m.PricePerUnit,
+	); err != nil {
 		return nil, err
 	}
 	return &m, nil
@@ -29,11 +39,23 @@ func (r *Repo) Create(ctx context.Context, name string, categoryID int64, brand 
 
 func (r *Repo) GetByID(ctx context.Context, id int64) (*Material, error) {
 	row := r.pool.QueryRow(ctx, `
-		SELECT id, name, category_id, brand, unit, active, created_at, price_per_unit
-		FROM materials WHERE id=$1
+		SELECT m.id, m.name, m.category_id, m.brand_id, COALESCE(b.name,''), m.unit, m.active, m.created_at, m.price_per_unit
+		FROM materials m
+		LEFT JOIN material_brands b ON b.id = m.brand_id
+		WHERE m.id = $1
 	`, id)
 	var m Material
-	if err := row.Scan(&m.ID, &m.Name, &m.CategoryID, &m.Brand, &m.Unit, &m.Active, &m.CreatedAt, &m.PricePerUnit); err != nil {
+	if err := row.Scan(
+		&m.ID,
+		&m.Name,
+		&m.CategoryID,
+		&m.BrandID,
+		&m.Brand,
+		&m.Unit,
+		&m.Active,
+		&m.CreatedAt,
+		&m.PricePerUnit,
+	); err != nil {
 		if err == pgx.ErrNoRows {
 			return nil, nil
 		}
@@ -80,13 +102,15 @@ func (r *Repo) SetActive(ctx context.Context, id int64, active bool) (*Material,
 
 func (r *Repo) List(ctx context.Context, onlyActive bool) ([]Material, error) {
 	q := `
-		SELECT id, name, category_id, brand, unit, active, created_at, price_per_unit
-		FROM materials
+		SELECT m.id, m.name, m.category_id, m.brand_id, COALESCE(b.name,''), m.unit, m.active, m.created_at, m.price_per_unit
+		FROM materials m
+		LEFT JOIN material_brands b ON b.id = m.brand_id
 	`
 	if onlyActive {
-		q += " WHERE active = TRUE"
+		q += " WHERE m.active = TRUE"
 	}
-	q += " ORDER BY name"
+	q += " ORDER BY b.name, m.name"
+
 	rows, err := r.pool.Query(ctx, q)
 	if err != nil {
 		return nil, err
@@ -96,12 +120,22 @@ func (r *Repo) List(ctx context.Context, onlyActive bool) ([]Material, error) {
 	var out []Material
 	for rows.Next() {
 		var m Material
-		if err := rows.Scan(&m.ID, &m.Name, &m.CategoryID, &m.Brand, &m.Unit, &m.Active, &m.CreatedAt, &m.PricePerUnit); err != nil {
+		if err := rows.Scan(
+			&m.ID,
+			&m.Name,
+			&m.CategoryID,
+			&m.BrandID,
+			&m.Brand,
+			&m.Unit,
+			&m.Active,
+			&m.CreatedAt,
+			&m.PricePerUnit,
+		); err != nil {
 			return nil, err
 		}
 		out = append(out, m)
 	}
-	return out, nil
+	return out, rows.Err()
 }
 
 type MatWithBal struct {
@@ -115,9 +149,10 @@ type MatWithBal struct {
 
 func (r *Repo) ListWithBalanceByWarehouse(ctx context.Context, warehouseID int64) ([]MatWithBal, error) {
 	rows, err := r.pool.Query(ctx, `
-		SELECT m.id, m.name, m.brand, m.unit, COALESCE(b.qty,0), m.category_id
+		SELECT m.id, m.name, COALESCE(b.name,''), m.unit, COALESCE(bal.qty,0), m.category_id
 		FROM materials m
-		LEFT JOIN balances b ON b.material_id = m.id AND b.warehouse_id = $1
+		LEFT JOIN material_brands b ON b.id = m.brand_id
+		LEFT JOIN balances bal ON ...
 		ORDER BY m.name
 	`, warehouseID)
 	if err != nil {
@@ -180,19 +215,19 @@ func (r *Repo) SearchByName(ctx context.Context, q string, onlyActive bool) ([]M
 	}
 	like := "%" + strings.ToLower(q) + "%"
 
-	baseSQL := `
-		SELECT id, name, category_id, brand, unit, active, created_at, price_per_unit
-		FROM materials
-		WHERE (LOWER(name) LIKE $1 OR LOWER(brand) LIKE $1)
+	base := `
+		SELECT m.id, m.name, m.category_id, m.brand_id, COALESCE(b.name,''), m.unit, m.active, m.created_at, m.price_per_unit
+		FROM materials m
+		LEFT JOIN material_brands b ON b.id = m.brand_id
+		WHERE LOWER(m.name) LIKE $1 OR LOWER(b.name) LIKE $1
 	`
 
 	var rows pgx.Rows
 	var err error
-
 	if onlyActive {
-		rows, err = r.pool.Query(ctx, baseSQL+` AND active = TRUE ORDER BY brand, name`, like)
+		rows, err = r.pool.Query(ctx, base+` AND m.active = TRUE ORDER BY b.name, m.name`, like)
 	} else {
-		rows, err = r.pool.Query(ctx, baseSQL+` ORDER BY brand, name`, like)
+		rows, err = r.pool.Query(ctx, base+` ORDER BY b.name, m.name`, like)
 	}
 	if err != nil {
 		return nil, err
@@ -203,20 +238,14 @@ func (r *Repo) SearchByName(ctx context.Context, q string, onlyActive bool) ([]M
 	for rows.Next() {
 		var m Material
 		if err := rows.Scan(
-			&m.ID,
-			&m.Name,
-			&m.CategoryID,
-			&m.Brand,
-			&m.Unit,
-			&m.Active,
-			&m.CreatedAt,
-			&m.PricePerUnit,
+			&m.ID, &m.Name, &m.CategoryID, &m.BrandID, &m.Brand,
+			&m.Unit, &m.Active, &m.CreatedAt, &m.PricePerUnit,
 		); err != nil {
 			return nil, err
 		}
 		out = append(out, m)
 	}
-	return out, nil
+	return out, rows.Err()
 }
 
 // ListBrandsByCategory возвращает уникальные бренды по категории материалов.
@@ -276,4 +305,31 @@ func (r *Repo) ListByCategoryAndBrand(ctx context.Context, categoryID int64, bra
 		out = append(out, m)
 	}
 	return out, nil
+}
+
+func (r *Repo) ListByBrand(ctx context.Context, brandID int64) ([]Material, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT m.id, m.name, m.category_id, m.brand_id, COALESCE(b.name,''), m.unit, m.active, m.created_at, m.price_per_unit
+		FROM materials m
+		LEFT JOIN material_brands b ON b.id = m.brand_id
+		WHERE m.brand_id = $1
+		ORDER BY m.name
+	`, brandID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []Material
+	for rows.Next() {
+		var m Material
+		if err := rows.Scan(
+			&m.ID, &m.Name, &m.CategoryID, &m.BrandID, &m.Brand,
+			&m.Unit, &m.Active, &m.CreatedAt, &m.PricePerUnit,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
 }

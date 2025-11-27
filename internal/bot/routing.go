@@ -2,6 +2,7 @@ package bot
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"strconv"
@@ -468,20 +469,29 @@ func (b *Bot) handleStateMessage(ctx context.Context, msg *tgbotapi.Message) {
 			b.send(tgbotapi.NewMessage(chatID, "Название не может быть пустым. Введите ещё раз."))
 			return
 		}
+
 		cidAny := st.Payload["cat_id"]
 		catID := int64(cidAny.(float64))
 
-		var brand string
+		brandName := ""
 		if bAny, ok := st.Payload["brand"]; ok {
 			if bs, ok2 := bAny.(string); ok2 {
-				brand = bs
+				brandName = bs
 			}
 		}
 
-		if _, err := b.materials.Create(ctx, name, catID, brand, materials.UnitG); err != nil {
+		// Находим или создаём бренд
+		br, err := b.brands.GetOrCreate(ctx, catID, brandName)
+		if err != nil {
+			b.send(tgbotapi.NewMessage(chatID, fmt.Sprintf("Ошибка при обработке бренда: %v", err)))
+			return
+		}
+
+		if _, err := b.materials.Create(ctx, name, catID, br.ID, materials.UnitG); err != nil {
 			b.send(tgbotapi.NewMessage(chatID, "Ошибка при создании материала"))
 			return
 		}
+
 		_ = b.states.Set(ctx, chatID, dialog.StateAdmMatMenu, dialog.Payload{})
 		b.send(tgbotapi.NewMessage(chatID, fmt.Sprintf("Материал «%s» создан.", name)))
 		b.showMaterialMenu(chatID, nil)
@@ -1563,10 +1573,56 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 		return
 
 	case strings.HasPrefix(data, "adm:mat:pickcat:"):
+		// Выбор категории при создании материала
 		cid, _ := strconv.ParseInt(strings.TrimPrefix(data, "adm:mat:pickcat:"), 10, 64)
-		// Сохраняем выбранную категорию и переходим к вводу бренда
-		_ = b.states.Set(ctx, fromChat, dialog.StateAdmMatBrand, dialog.Payload{"cat_id": cid})
-		b.editTextWithNav(fromChat, cb.Message.MessageID, "Введите бренд материала (можно оставить пустым, отправив «-»).")
+
+		// сохраняем выбранную категорию в состоянии
+		_ = b.states.Set(ctx, fromChat, dialog.StateAdmMatBrand, dialog.Payload{
+			"cat_id": float64(cid),
+		})
+
+		// показываем список брендов + кнопку "Новый бренд"
+		b.showMaterialBrandPick(ctx, fromChat, cb.Message.MessageID, cid)
+		_ = b.answerCallback(cb, "Ок", false)
+		return
+
+	case strings.HasPrefix(data, "adm:mat:brand:new:"):
+		// формат: adm:mat:brand:new:<catID>
+		cid, _ := strconv.ParseInt(strings.TrimPrefix(data, "adm:mat:brand:new:"), 10, 64)
+		_ = b.states.Set(ctx, fromChat, dialog.StateAdmMatBrand, dialog.Payload{
+			"cat_id": float64(cid),
+		})
+		b.editTextWithNav(fromChat, cb.Message.MessageID,
+			"Введите название бренда сообщением (или «-» чтобы оставить без бренда).")
+		_ = b.answerCallback(cb, "Ок", false)
+		return
+
+	case strings.HasPrefix(data, "adm:mat:brand:"):
+		// формат: adm:mat:brand:<catID>:<b64(brand)>
+		tail := strings.TrimPrefix(data, "adm:mat:brand:")
+		parts := strings.SplitN(tail, ":", 2)
+		if len(parts) != 2 {
+			_ = b.answerCallback(cb, "Некорректные данные", true)
+			return
+		}
+		cid, _ := strconv.ParseInt(parts[0], 10, 64)
+		decoded, err := base64.StdEncoding.DecodeString(parts[1])
+		if err != nil {
+			_ = b.answerCallback(cb, "Некорректные данные", true)
+			return
+		}
+		brand := string(decoded)
+
+		// сразу переходим к вводу названия материала
+		_ = b.states.Set(ctx, fromChat, dialog.StateAdmMatName, dialog.Payload{
+			"cat_id": float64(cid),
+			"brand":  brand,
+		})
+		b.editTextWithNav(
+			fromChat,
+			cb.Message.MessageID,
+			fmt.Sprintf("Выбран бренд: %s\n\nВведите название материала сообщением.", brand),
+		)
 		_ = b.answerCallback(cb, "Ок", false)
 		return
 
@@ -2106,35 +2162,38 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 	case strings.HasPrefix(data, "cons:cat:"):
 		catID, _ := strconv.ParseInt(strings.TrimPrefix(data, "cons:cat:"), 10, 64)
 		st, _ := b.states.Get(ctx, fromChat)
-		// сохраняем категорию в payload
 		if st.Payload == nil {
 			st.Payload = dialog.Payload{}
 		}
 		st.Payload["cons_cat_id"] = float64(catID)
 
-		brands, err := b.materials.ListBrandsByCategory(ctx, catID)
+		brands, err := b.brands.ListByCategory(ctx, catID, true)
 		if err != nil {
 			b.editTextAndClear(fromChat, cb.Message.MessageID, "Ошибка загрузки брендов.")
 			_ = b.answerCallback(cb, "Ошибка", true)
 			return
 		}
-
-		// если брендов нет или только пустой — сразу показываем материалы без фильтра по бренду
 		if len(brands) == 0 {
-			brands = []string{""}
+			b.editTextAndClear(fromChat, cb.Message.MessageID, "В этой категории пока нет брендов.")
+			_ = b.answerCallback(cb, "Готово", false)
+			return
 		}
-		// сохраняем бренды в payload, индексами будем выбирать
-		tmp := make([]any, 0, len(brands))
+
+		// сохраняем бренды в payload
+		var ids []any
+		var names []any
 		for _, br := range brands {
-			tmp = append(tmp, br)
+			ids = append(ids, br.ID)
+			names = append(names, br.Name)
 		}
-		st.Payload["cons_brands"] = tmp
+		st.Payload["cons_brand_ids"] = ids
+		st.Payload["cons_brand_names"] = names
 		_ = b.states.Set(ctx, fromChat, dialog.StateConsMatPick, st.Payload)
 
 		rows := [][]tgbotapi.InlineKeyboardButton{}
 		for i, br := range brands {
-			label := br
-			if br == "" {
+			label := br.Name
+			if label == "" {
 				label = "Без бренда"
 			}
 			rows = append(rows, tgbotapi.NewInlineKeyboardRow(
@@ -2149,38 +2208,31 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 
 	case strings.HasPrefix(data, "cons:brand:"):
 		idxStr := strings.TrimPrefix(data, "cons:brand:")
-		i, err := strconv.Atoi(idxStr)
-		if err != nil {
-			b.editTextAndClear(fromChat, cb.Message.MessageID, "Некорректный бренд.")
-			_ = b.answerCallback(cb, "Ошибка", true)
-			return
-		}
+		i, _ := strconv.Atoi(idxStr)
 
 		st, _ := b.states.Get(ctx, fromChat)
-		catAny, ok := st.Payload["cons_cat_id"]
-		if !ok {
-			b.editTextAndClear(fromChat, cb.Message.MessageID, "Категория не выбрана.")
+		if st == nil || st.Payload == nil {
+			b.editTextAndClear(fromChat, cb.Message.MessageID, "Состояние утеряно, начните заново.")
 			_ = b.answerCallback(cb, "Ошибка", true)
 			return
 		}
-		catID := int64(catAny.(float64))
 
-		rawBrands, ok := st.Payload["cons_brands"].([]any)
-		if !ok || i < 0 || i >= len(rawBrands) {
+		rawIDs, ok := st.Payload["cons_brand_ids"].([]any)
+		if !ok || i < 0 || i >= len(rawIDs) {
 			b.editTextAndClear(fromChat, cb.Message.MessageID, "Ошибка выбора бренда.")
 			_ = b.answerCallback(cb, "Ошибка", true)
 			return
 		}
-		brand, _ := rawBrands[i].(string)
+		brandID := int64(rawIDs[i].(float64))
 
-		mats, err := b.materials.ListByCategoryAndBrand(ctx, catID, brand)
+		mats, err := b.materials.ListByBrand(ctx, brandID)
 		if err != nil {
 			b.editTextAndClear(fromChat, cb.Message.MessageID, "Ошибка загрузки материалов.")
 			_ = b.answerCallback(cb, "Ошибка", true)
 			return
 		}
 		if len(mats) == 0 {
-			b.editTextAndClear(fromChat, cb.Message.MessageID, "В этой категории и бренде нет материалов.")
+			b.editTextAndClear(fromChat, cb.Message.MessageID, "В этом бренде нет материалов.")
 			_ = b.answerCallback(cb, "Готово", false)
 			return
 		}
@@ -2197,7 +2249,6 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 		}
 		rows = append(rows, navKeyboard(true, true).InlineKeyboard[0])
 		kb := tgbotapi.NewInlineKeyboardMarkup(rows...)
-
 		_ = b.states.Set(ctx, fromChat, dialog.StateConsMatPick, st.Payload)
 		b.send(tgbotapi.NewEditMessageTextAndMarkup(fromChat, cb.Message.MessageID, "Выберите материал:", kb))
 		_ = b.answerCallback(cb, "Ок", false)

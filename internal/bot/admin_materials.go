@@ -2,6 +2,7 @@ package bot
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -94,5 +95,43 @@ func (b *Bot) showMaterialItemMenu(ctx context.Context, chatID int64, editMsgID 
 		badge(m.Active), matName, catName, m.Unit, m.Active,
 	)
 
+	b.send(tgbotapi.NewEditMessageTextAndMarkup(chatID, editMsgID, text, kb))
+}
+
+// showMaterialBrandPick показывает список брендов по категории + кнопку "Новый бренд".
+func (b *Bot) showMaterialBrandPick(ctx context.Context, chatID int64, editMsgID int, catID int64) {
+	brands, err := b.materials.ListBrandsByCategory(ctx, catID)
+	if err != nil {
+		b.editTextAndClear(chatID, editMsgID, "Ошибка загрузки брендов")
+		return
+	}
+
+	rows := [][]tgbotapi.InlineKeyboardButton{}
+
+	// существующие бренды
+	for _, br := range brands {
+		if br == "" {
+			continue // пустой бренд из списка не показываем
+		}
+		b64 := base64.StdEncoding.EncodeToString([]byte(br))
+		cbData := fmt.Sprintf("adm:mat:brand:%d:%s", catID, b64)
+		rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(br, cbData),
+		))
+	}
+
+	// кнопка "Новый бренд"
+	rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+		tgbotapi.NewInlineKeyboardButtonData(
+			"➕ Новый бренд",
+			fmt.Sprintf("adm:mat:brand:new:%d", catID),
+		),
+	))
+
+	// навигация Назад / Отменить
+	rows = append(rows, navKeyboard(true, true).InlineKeyboard[0])
+
+	kb := tgbotapi.NewInlineKeyboardMarkup(rows...)
+	text := "Выберите бренд для материала (или создайте новый):"
 	b.send(tgbotapi.NewEditMessageTextAndMarkup(chatID, editMsgID, text, kb))
 }
