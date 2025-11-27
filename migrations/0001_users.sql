@@ -31,18 +31,26 @@ CREATE TABLE IF NOT EXISTS material_categories (
 
 -- MATERIALS
 CREATE TABLE IF NOT EXISTS materials (
-                                         id             BIGSERIAL   PRIMARY KEY,
-                                         name           TEXT        NOT NULL UNIQUE,
-                                         category_id    BIGINT      NOT NULL REFERENCES material_categories(id) ON DELETE RESTRICT,
+                                         id             BIGSERIAL     PRIMARY KEY,
+                                         name           TEXT          NOT NULL,
+                                         category_id    BIGINT        NOT NULL REFERENCES material_categories(id) ON DELETE RESTRICT,
                                          brand          TEXT          NOT NULL DEFAULT '',
-                                         unit           TEXT        NOT NULL DEFAULT 'pcs',
+                                         unit           TEXT          NOT NULL DEFAULT 'pcs',
                                          price_per_unit NUMERIC(12,2) NOT NULL DEFAULT 0, -- ₽ за g / шт
-                                         active         BOOLEAN     NOT NULL DEFAULT TRUE,
-                                         created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+                                         active         BOOLEAN       NOT NULL DEFAULT TRUE,
+                                         created_at     TIMESTAMPTZ   NOT NULL DEFAULT now()
 );
 
-CREATE INDEX IF NOT EXISTS idx_materials_category ON materials(category_id);
-CREATE INDEX IF NOT EXISTS idx_materials_category_brand ON materials(category_id, brand);
+-- уникальность материала в рамках категории + бренда
+CREATE UNIQUE INDEX IF NOT EXISTS uq_materials_category_brand_name
+    ON materials(category_id, brand, name);
+
+-- обычные индексы для быстрых запросов
+CREATE INDEX IF NOT EXISTS idx_materials_category
+    ON materials(category_id);
+
+CREATE INDEX IF NOT EXISTS idx_materials_category_brand
+    ON materials(category_id, brand);
 
 -- BALANCES
 CREATE TABLE IF NOT EXISTS balances (
