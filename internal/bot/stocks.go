@@ -322,7 +322,7 @@ func (b *Bot) handleStocksImportExcel(ctx context.Context, chatID int64, u *user
 
 	header := rows[0]
 	if len(header) < 9 {
-		b.send(tgbotapi.NewMessage(chatID, "Некорректный формат файла: ожидается минимум 8 колонок (warehouse_id ... qty)."))
+		b.send(tgbotapi.NewMessage(chatID, "Некорректный формат файла: ожидается минимум 9 колонок (warehouse_id ... qty)."))
 		return
 	}
 
@@ -359,7 +359,7 @@ func (b *Bot) handleStocksImportExcel(ctx context.Context, chatID int64, u *user
 		}
 
 		whIDStr := strings.TrimSpace(row[0])
-		matIDStr := strings.TrimSpace(row[4])
+		matIDStr := strings.TrimSpace(row[5])
 		qtyStr := strings.TrimSpace(row[8]) // qty
 
 		if whIDStr == "" || matIDStr == "" {

@@ -134,8 +134,8 @@ func (b *Bot) handleSuppliesImportExcel(ctx context.Context, chatID int64, u *us
 
 	// 2) проверим хотя бы первую строку заголовка по количеству колонок
 	header := rows[0]
-	if len(header) < 8 {
-		b.send(tgbotapi.NewMessage(chatID, "Некорректный формат файла: ожидается минимум 8 колонок (warehouse_id ... Количество)."))
+	if len(header) < 9 {
+		b.send(tgbotapi.NewMessage(chatID, "Некорректный формат файла: ожидается минимум 9 колонок (warehouse_id ... Количество)."))
 		return
 	}
 
@@ -171,7 +171,7 @@ func (b *Bot) handleSuppliesImportExcel(ctx context.Context, chatID int64, u *us
 		if len(row) < 9 {
 			continue
 		}
-		matIDStr := strings.TrimSpace(row[4])
+		matIDStr := strings.TrimSpace(row[5])
 		qtyStr := strings.TrimSpace(row[8])
 
 		if matIDStr == "" || qtyStr == "" {
