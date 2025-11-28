@@ -633,12 +633,38 @@ func (b *Bot) handleStateMessage(ctx context.Context, msg *tgbotapi.Message) {
 		b.showSuppliesCart(ctx, chatID, nil, whID, items)
 		return
 
+	case dialog.StateSupImportComment:
+		// ввод комментария к поставке (поставщик и т.п.)
+		text := strings.TrimSpace(msg.Text)
+		if text == "" {
+			b.send(tgbotapi.NewMessage(chatID,
+				"Комментарий не может быть пустым. Введите текст или «-», если комментарий не нужен."))
+			return
+		}
+		if text == "-" {
+			text = ""
+		}
+
+		payload := dialog.Payload{"comment": text}
+		_ = b.states.Set(ctx, chatID, dialog.StateSupImportFile, payload)
+		b.send(tgbotapi.NewMessage(chatID,
+			"Теперь отправьте Excel-файл (.xlsx) с поступлением, который вы выгрузили через «Выгрузить материалы» и заполнили колонку «Количество»."))
+		return
+
 	case dialog.StateSupImportFile:
 		// ждём документ Excel
 		if msg.Document == nil {
 			b.send(tgbotapi.NewMessage(chatID,
-				"Пожалуйста, отправьте Excel-файл (.xlsx) с поступлением, который был выгружен через «Выгрузить материалы» и в котором заполнена колонка «Количество»."))
+				"Пожалуйста, отправьте Excel-файл (.xlsx) с поступлением, который вы выгрузили через «Выгрузить материалы» и в котором заполнена колонка «Количество»."))
 			return
+		}
+
+		// комментарий, введённый на предыдущем шаге (может быть пустым)
+		comment := ""
+		if st != nil && st.Payload != nil {
+			if c, ok := st.Payload["comment"].(string); ok {
+				comment = c
+			}
 		}
 
 		// ищем пользователя
@@ -656,7 +682,7 @@ func (b *Bot) handleStateMessage(ctx context.Context, msg *tgbotapi.Message) {
 		}
 
 		// обрабатываем Excel
-		b.handleSuppliesImportExcel(ctx, chatID, u, data)
+		b.handleSuppliesImportExcel(ctx, chatID, u, data, comment)
 		return
 
 	case dialog.StateStockImportFile:
@@ -1947,10 +1973,10 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 		return
 
 	case data == "sup:import":
-		// пока только ставим состояние и объясняем, что ждём файл
-		_ = b.states.Set(ctx, fromChat, dialog.StateSupImportFile, dialog.Payload{})
+		// сначала спрашиваем комментарий (поставщика), затем ожидаем файл
+		_ = b.states.Set(ctx, fromChat, dialog.StateSupImportComment, dialog.Payload{})
 		b.editTextWithNav(fromChat, cb.Message.MessageID,
-			"Загрузите файл Excel с поступлением (тот, что вы выгрузили через «Выгрузить материалы» и заполнили колонку «Количество»).")
+			"Введите комментарий к поставке (например, поставщик). Если комментарий не нужен, отправьте «-».")
 		_ = b.answerCallback(cb, "Ок", false)
 		return
 

@@ -116,7 +116,7 @@ func (b *Bot) showSuppliesPickMaterial(ctx context.Context, chatID int64, editMs
 	b.send(tgbotapi.NewEditMessageTextAndMarkup(chatID, editMsgID, "Выберите материал:", kb))
 }
 
-func (b *Bot) handleSuppliesImportExcel(ctx context.Context, chatID int64, u *users.User, data []byte) {
+func (b *Bot) handleSuppliesImportExcel(ctx context.Context, chatID int64, u *users.User, data []byte, comment string) {
 	// 1) открываем Excel из байтов
 	f, err := excelize.OpenReader(bytes.NewReader(data))
 	if err != nil {
@@ -195,7 +195,11 @@ func (b *Bot) handleSuppliesImportExcel(ctx context.Context, chatID int64, u *us
 		}
 
 		// 5) приёмка на склад. Цена нам в файле не задана — ставим 0, это чисто количественная корректировка.
-		if err := b.inventory.ReceiveWithCost(ctx, u.ID, warehouseID, matID, qty, 0, "supply_excel"); err != nil {
+		note := "supply_excel"
+		if comment != "" {
+			note = fmt.Sprintf("supply_excel: %s", comment)
+		}
+		if err := b.inventory.ReceiveWithCost(ctx, u.ID, warehouseID, matID, qty, 0, note); err != nil {
 			b.send(tgbotapi.NewMessage(chatID,
 				fmt.Sprintf("Ошибка приёмки в строке %d (материал %d): %v", i+1, matID, err)))
 			return
