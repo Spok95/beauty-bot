@@ -75,10 +75,11 @@ func (b *Bot) showStocksMenu(chatID int64, editMsgID *int) {
 		navKeyboard(false, true).InlineKeyboard[0],
 	)
 
+	title := "Инвентаризация — выберите действие"
 	if editMsgID != nil {
-		b.send(tgbotapi.NewEditMessageTextAndMarkup(chatID, *editMsgID, "Остатки — выберите действие", kb))
+		b.send(tgbotapi.NewEditMessageTextAndMarkup(chatID, *editMsgID, title, kb))
 	} else {
-		m := tgbotapi.NewMessage(chatID, "Остатки — выберите действие")
+		m := tgbotapi.NewMessage(chatID, title)
 		m.ReplyMarkup = kb
 		b.send(m)
 	}
@@ -233,6 +234,7 @@ func (b *Bot) exportWarehouseMaterialsExcel(ctx context.Context, chatID int64, m
 		"warehouse_name",
 		"category_id",
 		"category_name",
+		"brand",
 		"material_id",
 		"material_name",
 		"unit",
@@ -252,6 +254,7 @@ func (b *Bot) exportWarehouseMaterialsExcel(ctx context.Context, chatID int64, m
 			wh.Name,
 			m.CategoryID,
 			catName,
+			m.Brand,
 			m.ID,
 			m.Name,
 			string(m.Unit),
@@ -318,7 +321,7 @@ func (b *Bot) handleStocksImportExcel(ctx context.Context, chatID int64, u *user
 	}
 
 	header := rows[0]
-	if len(header) < 8 {
+	if len(header) < 9 {
 		b.send(tgbotapi.NewMessage(chatID, "Некорректный формат файла: ожидается минимум 8 колонок (warehouse_id ... qty)."))
 		return
 	}
@@ -351,13 +354,13 @@ func (b *Bot) handleStocksImportExcel(ctx context.Context, chatID int64, u *user
 
 	for i := 1; i < len(rows); i++ {
 		row := rows[i]
-		if len(row) < 8 {
+		if len(row) < 9 {
 			continue
 		}
 
 		whIDStr := strings.TrimSpace(row[0])
 		matIDStr := strings.TrimSpace(row[4])
-		qtyStr := strings.TrimSpace(row[7]) // qty
+		qtyStr := strings.TrimSpace(row[8]) // qty
 
 		if whIDStr == "" || matIDStr == "" {
 			continue
@@ -573,6 +576,7 @@ func (b *Bot) exportWarehouseStocksExcel(ctx context.Context, chatID int64, msgI
 		"warehouse_name",
 		"category_id",
 		"category_name",
+		"brand",
 		"material_id",
 		"material_name",
 		"unit",
@@ -592,6 +596,7 @@ func (b *Bot) exportWarehouseStocksExcel(ctx context.Context, chatID int64, msgI
 			wh.Name,
 			it.CategoryID,
 			catName,
+			it.Brand,
 			it.ID,
 			it.Name,
 			string(it.Unit),

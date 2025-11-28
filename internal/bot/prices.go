@@ -152,6 +152,7 @@ func (b *Bot) exportWarehouseMaterialPricesExcel(ctx context.Context, chatID int
 		"warehouse_name",
 		"category_id",
 		"category_name",
+		"brand",
 		"material_id",
 		"material_name",
 		"unit",
@@ -173,6 +174,7 @@ func (b *Bot) exportWarehouseMaterialPricesExcel(ctx context.Context, chatID int
 			wh.Name,
 			it.CategoryID,
 			catName,
+			it.Brand,
 			it.ID,
 			it.Name,
 			string(it.Unit),
@@ -420,7 +422,7 @@ func (b *Bot) handlePriceMatImportExcel(ctx context.Context, chatID int64, data 
 	}
 
 	header := rows[0]
-	if len(header) < 8 {
+	if len(header) < 9 {
 		b.send(tgbotapi.NewMessage(chatID, "Некорректный формат файла: ожидается минимум 8 колонок (warehouse_id ... price_per_unit)."))
 		return
 	}
@@ -451,13 +453,13 @@ func (b *Bot) handlePriceMatImportExcel(ctx context.Context, chatID int64, data 
 
 	for i := 1; i < len(rows); i++ {
 		row := rows[i]
-		if len(row) < 8 {
+		if len(row) < 9 {
 			continue
 		}
 
 		whIDStr := strings.TrimSpace(row[0])
 		matIDStr := strings.TrimSpace(row[4])
-		priceStr := strings.TrimSpace(row[7]) // price_per_unit
+		priceStr := strings.TrimSpace(row[8]) // price_per_unit
 
 		if whIDStr == "" || matIDStr == "" {
 			continue

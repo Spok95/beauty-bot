@@ -168,11 +168,11 @@ func (b *Bot) handleSuppliesImportExcel(ctx context.Context, chatID int64, u *us
 	// 4) проходим по всем строкам, начиная со 2-й (индекс 1)
 	for i := 1; i < len(rows); i++ {
 		row := rows[i]
-		if len(row) < 8 {
+		if len(row) < 9 {
 			continue
 		}
 		matIDStr := strings.TrimSpace(row[4])
-		qtyStr := strings.TrimSpace(row[7])
+		qtyStr := strings.TrimSpace(row[8])
 
 		if matIDStr == "" || qtyStr == "" {
 			// пустая строка или количество не задано — пропускаем
