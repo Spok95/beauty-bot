@@ -67,10 +67,10 @@ func (r *Repo) GetByID(ctx context.Context, id int64) (*Material, error) {
 func (r *Repo) UpdateName(ctx context.Context, id int64, name string) (*Material, error) {
 	row := r.pool.QueryRow(ctx, `
 		UPDATE materials SET name=$2 WHERE id=$1
-		RETURNING id, name, category_id, brand, unit, active, created_at
+		RETURNING id, name, category_id, brand_id, unit, active, created_at
 	`, id, name)
 	var m Material
-	if err := row.Scan(&m.ID, &m.Name, &m.CategoryID, &m.Brand, &m.Unit, &m.Active, &m.CreatedAt); err != nil {
+	if err := row.Scan(&m.ID, &m.Name, &m.CategoryID, &m.BrandID, &m.Unit, &m.Active, &m.CreatedAt); err != nil {
 		return nil, err
 	}
 	return &m, nil
@@ -79,10 +79,10 @@ func (r *Repo) UpdateName(ctx context.Context, id int64, name string) (*Material
 func (r *Repo) UpdateUnit(ctx context.Context, id int64, unit Unit) (*Material, error) {
 	row := r.pool.QueryRow(ctx, `
 		UPDATE materials SET unit=$2 WHERE id=$1
-		RETURNING id, name, category_id, brand, unit, active, created_at
+		RETURNING id, name, category_id, brand_id, unit, active, created_at
 	`, id, string(unit))
 	var m Material
-	if err := row.Scan(&m.ID, &m.Name, &m.CategoryID, &m.Brand, &m.Unit, &m.Active, &m.CreatedAt); err != nil {
+	if err := row.Scan(&m.ID, &m.Name, &m.CategoryID, &m.BrandID, &m.Unit, &m.Active, &m.CreatedAt); err != nil {
 		return nil, err
 	}
 	return &m, nil
@@ -91,10 +91,10 @@ func (r *Repo) UpdateUnit(ctx context.Context, id int64, unit Unit) (*Material, 
 func (r *Repo) SetActive(ctx context.Context, id int64, active bool) (*Material, error) {
 	row := r.pool.QueryRow(ctx, `
 		UPDATE materials SET active=$2 WHERE id=$1
-		RETURNING id, name, category_id, brand, unit, active, created_at
+		RETURNING id, name, category_id, brand_id, unit, active, created_at
 	`, id, active)
 	var m Material
-	if err := row.Scan(&m.ID, &m.Name, &m.CategoryID, &m.Brand, &m.Unit, &m.Active, &m.CreatedAt); err != nil {
+	if err := row.Scan(&m.ID, &m.Name, &m.CategoryID, &m.BrandID, &m.Unit, &m.Active, &m.CreatedAt); err != nil {
 		return nil, err
 	}
 	return &m, nil
@@ -149,11 +149,21 @@ type MatWithBal struct {
 
 func (r *Repo) ListWithBalanceByWarehouse(ctx context.Context, warehouseID int64) ([]MatWithBal, error) {
 	rows, err := r.pool.Query(ctx, `
-		SELECT m.id, m.name, COALESCE(b.name,''), m.unit, COALESCE(bal.qty,0), m.category_id
+		SELECT
+			m.id,
+			m.name,
+			COALESCE(br.name, '') AS brand,
+			m.unit,
+			COALESCE(bal.qty, 0) AS qty,
+			m.category_id
 		FROM materials m
-		LEFT JOIN material_brands b ON b.id = m.brand_id
-		LEFT JOIN balances bal ON ...
-		ORDER BY m.name
+		LEFT JOIN material_brands br
+			ON br.id = m.brand_id
+		LEFT JOIN balances bal
+			ON bal.material_id = m.id
+		   AND bal.warehouse_id = $1
+		WHERE m.active = TRUE
+		ORDER BY m.category_id, br.name, m.name
 	`, warehouseID)
 	if err != nil {
 		return nil, err
@@ -163,12 +173,19 @@ func (r *Repo) ListWithBalanceByWarehouse(ctx context.Context, warehouseID int64
 	var out []MatWithBal
 	for rows.Next() {
 		var it MatWithBal
-		if err := rows.Scan(&it.ID, &it.Name, &it.Brand, &it.Unit, &it.Balance, &it.CategoryID); err != nil {
+		if err := rows.Scan(
+			&it.ID,
+			&it.Name,
+			&it.Brand,
+			&it.Unit,
+			&it.Balance,
+			&it.CategoryID,
+		); err != nil {
 			return nil, err
 		}
 		out = append(out, it)
 	}
-	return out, nil
+	return out, rows.Err()
 }
 
 // GetBalance Возврат остатка по складу/материалу (может быть отрицательным)
@@ -189,10 +206,10 @@ func (r *Repo) UpdatePrice(ctx context.Context, id int64, price float64) (*Mater
 	row := r.pool.QueryRow(ctx, `
 		UPDATE materials SET price_per_unit=$2
 		WHERE id=$1
-		RETURNING id, name, category_id, brand, unit, active, created_at, price_per_unit
+		RETURNING id, name, category_id, brand_id, unit, active, created_at, price_per_unit
 	`, id, price)
 	var m Material
-	if err := row.Scan(&m.ID, &m.Name, &m.CategoryID, &m.Brand, &m.Unit, &m.Active, &m.CreatedAt, &m.PricePerUnit); err != nil {
+	if err := row.Scan(&m.ID, &m.Name, &m.CategoryID, &m.BrandID, &m.Unit, &m.Active, &m.CreatedAt, &m.PricePerUnit); err != nil {
 		return nil, err
 	}
 	return &m, nil
@@ -248,13 +265,14 @@ func (r *Repo) SearchByName(ctx context.Context, q string, onlyActive bool) ([]M
 	return out, rows.Err()
 }
 
-// ListBrandsByCategory возвращает уникальные бренды по категории материалов.
+// ListBrandsByCategory возвращает список имён брендов по категории
+// по новой схеме: из material_brands.
 func (r *Repo) ListBrandsByCategory(ctx context.Context, categoryID int64) ([]string, error) {
 	rows, err := r.pool.Query(ctx, `
-		SELECT DISTINCT brand
-		FROM materials
-		WHERE category_id = $1
-		ORDER BY brand
+		SELECT name
+		FROM material_brands
+		WHERE category_id = $1 AND active = TRUE
+		ORDER BY name
 	`, categoryID)
 	if err != nil {
 		return nil, err
@@ -271,16 +289,26 @@ func (r *Repo) ListBrandsByCategory(ctx context.Context, categoryID int64) ([]st
 			brands = append(brands, b)
 		}
 	}
-	return brands, nil
+	return brands, rows.Err()
 }
 
-// ListByCategoryAndBrand возвращает материалы по категории и бренду.
+// ListByCategoryAndBrand возвращает материалы по категории и имени бренда.
 func (r *Repo) ListByCategoryAndBrand(ctx context.Context, categoryID int64, brand string) ([]Material, error) {
 	rows, err := r.pool.Query(ctx, `
-		SELECT id, name, category_id, brand, unit, active, created_at, price_per_unit
-		FROM materials
-		WHERE category_id = $1 AND brand = $2
-		ORDER BY name
+		SELECT m.id,
+		       m.name,
+		       m.category_id,
+		       m.brand_id,
+		       COALESCE(b.name, ''),
+		       m.unit,
+		       m.active,
+		       m.created_at,
+		       m.price_per_unit
+		FROM materials m
+		LEFT JOIN material_brands b ON b.id = m.brand_id
+		WHERE m.category_id = $1
+		  AND b.name = $2
+		ORDER BY m.name
 	`, categoryID, brand)
 	if err != nil {
 		return nil, err
@@ -294,6 +322,7 @@ func (r *Repo) ListByCategoryAndBrand(ctx context.Context, categoryID int64, bra
 			&m.ID,
 			&m.Name,
 			&m.CategoryID,
+			&m.BrandID,
 			&m.Brand,
 			&m.Unit,
 			&m.Active,
@@ -304,7 +333,7 @@ func (r *Repo) ListByCategoryAndBrand(ctx context.Context, categoryID int64, bra
 		}
 		out = append(out, m)
 	}
-	return out, nil
+	return out, rows.Err()
 }
 
 func (r *Repo) ListByBrand(ctx context.Context, brandID int64) ([]Material, error) {

@@ -233,7 +233,7 @@ func (b *Bot) handleStateMessage(ctx context.Context, msg *tgbotapi.Message) {
 
 	// Кнопки нижней панели для админа
 	if msg.Text == "Склады" || msg.Text == "Категории" || msg.Text == "Материалы" ||
-		msg.Text == "Остатки" || msg.Text == "Поставки" || msg.Text == "Абонементы" ||
+		msg.Text == "Инвентаризация" || msg.Text == "Поставки" || msg.Text == "Абонементы" ||
 		msg.Text == "Установка цен" || msg.Text == "Аренда и Расходы материалов по мастерам" {
 		u, _ := b.users.GetByTelegramID(ctx, tgID)
 		if u == nil || u.Status != users.StatusApproved {
@@ -260,7 +260,7 @@ func (b *Bot) handleStateMessage(ctx context.Context, msg *tgbotapi.Message) {
 			_ = b.states.Set(ctx, chatID, dialog.StateAdmMatMenu, dialog.Payload{})
 			b.showMaterialMenu(chatID, nil)
 			return
-		case "Остатки":
+		case "Инвентаризация":
 			if u.Role != users.RoleAdmin && u.Role != users.RoleAdministrator {
 				return
 			}
