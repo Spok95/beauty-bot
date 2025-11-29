@@ -947,7 +947,10 @@ func (b *Bot) handleStateMessage(ctx context.Context, msg *tgbotapi.Message) {
 		}
 		st.Payload["min"] = float64(n)
 		_ = b.states.Set(ctx, chatID, dialog.StateAdmRatesCreateMax, st.Payload)
-		b.send(tgbotapi.NewMessage(chatID, "Введите максимальное значение диапазона или «-» для бесконечности"))
+
+		m := tgbotapi.NewMessage(chatID, "Введите максимальное значение диапазона или «-» для бесконечности")
+		m.ReplyMarkup = navKeyboard(true, true)
+		b.send(m)
 		return
 
 	case dialog.StateAdmRatesCreateMax:
@@ -963,7 +966,10 @@ func (b *Bot) handleStateMessage(ctx context.Context, msg *tgbotapi.Message) {
 			st.Payload["max"] = float64(n)
 		}
 		_ = b.states.Set(ctx, chatID, dialog.StateAdmRatesCreateThreshold, st.Payload)
-		b.send(tgbotapi.NewMessage(chatID, "Введите порог материалов на единицу (например 100 или 1000)"))
+
+		m := tgbotapi.NewMessage(chatID, "Введите порог материалов на единицу (например 100 или 1000)")
+		m.ReplyMarkup = navKeyboard(true, true)
+		b.send(m)
 		return
 
 	case dialog.StateAdmRatesCreateThreshold:
@@ -975,7 +981,10 @@ func (b *Bot) handleStateMessage(ctx context.Context, msg *tgbotapi.Message) {
 		}
 		st.Payload["thr"] = x
 		_ = b.states.Set(ctx, chatID, dialog.StateAdmRatesCreatePriceWith, st.Payload)
-		b.send(tgbotapi.NewMessage(chatID, "Цена за ед., если порог выполнен (руб)"))
+
+		m := tgbotapi.NewMessage(chatID, "Цена за ед., если порог выполнен (руб)")
+		m.ReplyMarkup = navKeyboard(true, true)
+		b.send(m)
 		return
 
 	case dialog.StateAdmRatesCreatePriceWith:
@@ -987,7 +996,10 @@ func (b *Bot) handleStateMessage(ctx context.Context, msg *tgbotapi.Message) {
 		}
 		st.Payload["pwith"] = x
 		_ = b.states.Set(ctx, chatID, dialog.StateAdmRatesCreatePriceOwn, st.Payload)
-		b.send(tgbotapi.NewMessage(chatID, "Цена за ед., если порог НЕ выполнен (руб)"))
+
+		m := tgbotapi.NewMessage(chatID, "Цена за ед., если порог НЕ выполнен (руб)")
+		m.ReplyMarkup = navKeyboard(true, true)
+		b.send(m)
 		return
 
 	case dialog.StateAdmRatesCreatePriceOwn:
