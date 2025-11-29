@@ -219,7 +219,14 @@ func (b *Bot) handleSuppliesImportExcel(ctx context.Context, chatID int64, u *us
 		return
 	}
 
-	// 4) проходим по всем строкам, начиная со 2-й (индекс 1)
+	// 4) создаём batch для всей поставки из файла
+	batchID, err := b.inventory.CreateSupplyBatch(ctx, u.ID, warehouseID, comment)
+	if err != nil {
+		b.send(tgbotapi.NewMessage(chatID, "Не удалось создать запись поставки (batch)."))
+		return
+	}
+
+	// 5) проходим по всем строкам, начиная со 2-й (индекс 1)
 	for i := 1; i < len(rows); i++ {
 		row := rows[i]
 		if len(row) < 9 {
@@ -253,7 +260,7 @@ func (b *Bot) handleSuppliesImportExcel(ctx context.Context, chatID int64, u *us
 		if comment != "" {
 			note = fmt.Sprintf("supply_excel: %s", comment)
 		}
-		if err := b.inventory.ReceiveWithCost(ctx, u.ID, warehouseID, matID, qty, 0, note, comment); err != nil {
+		if err := b.inventory.ReceiveWithCost(ctx, u.ID, warehouseID, matID, qty, 0, note, comment, batchID); err != nil {
 			b.send(tgbotapi.NewMessage(chatID,
 				fmt.Sprintf("Ошибка приёмки в строке %d (материал %d): %v", i+1, matID, err)))
 			return
@@ -291,7 +298,7 @@ func (b *Bot) exportSupplyExcel(ctx context.Context, chatID int64, msgID int, su
 
 	first := items[0]
 
-	// Заголовок: "Поставка + комментарий"
+	// Заголовок/подпись файла
 	title := "Поставка"
 	if c := strings.TrimSpace(first.Comment); c != "" {
 		title = fmt.Sprintf("Поставка %s", c)
@@ -302,51 +309,73 @@ func (b *Bot) exportSupplyExcel(ctx context.Context, chatID int64, msgID int, su
 
 	sheet := f.GetSheetName(f.GetActiveSheetIndex())
 
-	// Шапка (строка с общими данными)
-	headerText := fmt.Sprintf(
-		"%s\nСклад: %s\nКто провёл: %s\nДата: %s",
-		title,
-		first.WarehouseName,
-		first.ActorName,
-		first.CreatedAt.Format("02.01.2006 15:04"),
-	)
-	if err := f.SetCellValue(sheet, "A1", headerText); err != nil {
-		b.editTextAndClear(chatID, msgID, "Ошибка формирования файла (заголовок).")
+	// --- Шапка ---
+
+	supplier := strings.TrimSpace(first.Comment)
+	if supplier == "" {
+		supplier = "не указан"
+	}
+
+	// 1: Поставщик
+	if err := f.SetCellValue(sheet, "A1",
+		fmt.Sprintf("Поставщик: %s", supplier)); err != nil {
+		b.editTextAndClear(chatID, msgID, "Ошибка формирования файла (шапка).")
+		return
+	}
+	// 2: Склад
+	if err := f.SetCellValue(sheet, "A2",
+		fmt.Sprintf("Склад: %s", first.WarehouseName)); err != nil {
+		b.editTextAndClear(chatID, msgID, "Ошибка формирования файла (шапка).")
+		return
+	}
+	// 3: Дата+время
+	if err := f.SetCellValue(sheet, "A3",
+		fmt.Sprintf("Дата: %s", first.CreatedAt.Format("02.01.2006 15:04"))); err != nil {
+		b.editTextAndClear(chatID, msgID, "Ошибка формирования файла (шапка).")
 		return
 	}
 
-	// Заголовок таблицы
-	headerRow := []interface{}{"Дата", "Время", "Категория", "Бренд", "Материал", "Количество", "Ед."}
-	if err := f.SetSheetRow(sheet, "A3", &headerRow); err != nil {
+	// размазываем шапку на A..D
+	if err := f.MergeCell(sheet, "A1", "D1"); err != nil {
+		b.editTextAndClear(chatID, msgID, "Ошибка формирования файла (merge A1:D1).")
+		return
+	}
+	if err := f.MergeCell(sheet, "A2", "D2"); err != nil {
+		b.editTextAndClear(chatID, msgID, "Ошибка формирования файла (merge A2:D2).")
+		return
+	}
+	if err := f.MergeCell(sheet, "A3", "D3"); err != nil {
+		b.editTextAndClear(chatID, msgID, "Ошибка формирования файла (merge A3:D3).")
+		return
+	}
+
+	// --- Таблица ---
+
+	// заголовок таблицы (строка 5)
+	headerRow := []interface{}{"Категория", "Бренд", "Материал", "Количество"}
+	if err := f.SetSheetRow(sheet, "A5", &headerRow); err != nil {
 		b.editTextAndClear(chatID, msgID, "Ошибка формирования файла (заголовок таблицы).")
 		return
 	}
 
-	// Строки
-	row := 4
+	// данные с 6-й строки
+	rowIdx := 6
 	for _, it := range items {
-		date := it.CreatedAt.Format("02.01.2006")
-		timeStr := it.CreatedAt.Format("15:04:05")
-		excelRow := []interface{}{
-			date,
-			timeStr,
+		row := []interface{}{
 			it.CategoryName,
 			it.BrandName,
 			it.MaterialName,
 			it.Qty,
-			it.Unit,
 		}
-		cell, err := excelize.CoordinatesToCellName(1, row)
-		if err != nil {
-			b.editTextAndClear(chatID, msgID, "Ошибка формирования файла (ячейка).")
+		cell := fmt.Sprintf("A%d", rowIdx)
+		if err := f.SetSheetRow(sheet, cell, &row); err != nil {
+			b.editTextAndClear(chatID, msgID, "Ошибка формирования файла (данные).")
 			return
 		}
-		if err := f.SetSheetRow(sheet, cell, &excelRow); err != nil {
-			b.editTextAndClear(chatID, msgID, "Ошибка формирования файла (строка).")
-			return
-		}
-		row++
+		rowIdx++
 	}
+
+	// --- Запись и отправка ---
 
 	buf := &bytes.Buffer{}
 	if err := f.Write(buf); err != nil {

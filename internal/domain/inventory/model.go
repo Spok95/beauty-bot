@@ -43,3 +43,11 @@ type SupplyDetail struct {
 	Qty           float64
 	Comment       string
 }
+
+type SupplyBatch struct {
+	ID          int64
+	CreatedAt   time.Time
+	ActorID     int64
+	WarehouseID int64
+	Comment     string
+}

@@ -57,7 +57,13 @@ func (r *Repo) WriteOff(ctx context.Context, actorID, warehouseID, materialID in
 	return r.apply(ctx, actorID, warehouseID, materialID, -qty, MoveOut, note)
 }
 
-func (r *Repo) ReceiveWithCost(ctx context.Context, actorID, warehouseID, materialID int64, qty float64, unitCost float64, note string, comment string) error {
+func (r *Repo) ReceiveWithCost(
+	ctx context.Context,
+	actorID, warehouseID, materialID int64,
+	qty float64, unitCost float64,
+	note string, comment string,
+	batchID int64,
+) error {
 	if qty <= 0 {
 		return fmt.Errorf("qty must be > 0")
 	}
@@ -67,30 +73,40 @@ func (r *Repo) ReceiveWithCost(ctx context.Context, actorID, warehouseID, materi
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	// balances (разрешаем отрицательные/положительные без проверок)
-	if _, err = tx.Exec(ctx, `
+	// balances
+	_, err = tx.Exec(ctx, `
 		INSERT INTO balances (warehouse_id, material_id, qty)
 		VALUES ($1,$2,$3)
 		ON CONFLICT (warehouse_id, material_id)
 		DO UPDATE SET qty = balances.qty + EXCLUDED.qty
-	`, warehouseID, materialID, qty); err != nil {
+	`, warehouseID, materialID, qty)
+	if err != nil {
 		return err
 	}
 
-	// movements (лог прихода)
-	if _, err = tx.Exec(ctx, `
+	// movements
+	_, err = tx.Exec(ctx, `
 		INSERT INTO movements (actor_id, warehouse_id, material_id, qty, type, note)
 		VALUES ($1,$2,$3,$4,'in',$5)
-	`, actorID, warehouseID, materialID, qty, note); err != nil {
+	`, actorID, warehouseID, materialID, qty, note)
+	if err != nil {
 		return err
 	}
 
 	// supplies (стоимость поставки)
 	total := unitCost * qty
-	if _, err = tx.Exec(ctx, `
-		INSERT INTO supplies (added_by, warehouse_id, material_id, qty, unit_cost, total_cost, comment)
-		VALUES ($1,$2,$3,$4,$5,$6,$7)
-	`, actorID, warehouseID, materialID, qty, unitCost, total, comment); err != nil {
+	var batchVal any
+	if batchID > 0 {
+		batchVal = batchID
+	} else {
+		batchVal = nil
+	}
+
+	_, err = tx.Exec(ctx, `
+		INSERT INTO supplies (added_by, warehouse_id, material_id, qty, unit_cost, total_cost, comment, batch_id)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+	`, actorID, warehouseID, materialID, qty, unitCost, total, comment, batchVal)
+	if err != nil {
 		return err
 	}
 
@@ -121,11 +137,11 @@ func (r *Repo) GetBalance(ctx context.Context, warehouseID, materialID int64) (f
 	return qty, err
 }
 
-// ListSuppliesByPeriod возвращает список поставок за период [from, to).
-func (r *Repo) ListSuppliesByPeriod(ctx context.Context, from, to time.Time) ([]Supply, error) {
+// ListSuppliesByPeriod возвращает список «шапок» поставок (batch) за период [from, to).
+func (r *Repo) ListSuppliesByPeriod(ctx context.Context, from, to time.Time) ([]SupplyBatch, error) {
 	rows, err := r.pool.Query(ctx, `
-		SELECT id, created_at, added_by, warehouse_id, material_id, qty, unit_cost, total_cost, comment
-		FROM supplies
+		SELECT id, created_at, added_by, warehouse_id, comment
+		FROM supply_batches
 		WHERE created_at >= $1 AND created_at < $2
 		ORDER BY created_at DESC, id DESC
 	`, from, to)
@@ -134,18 +150,14 @@ func (r *Repo) ListSuppliesByPeriod(ctx context.Context, from, to time.Time) ([]
 	}
 	defer rows.Close()
 
-	var out []Supply
+	var out []SupplyBatch
 	for rows.Next() {
-		var s Supply
+		var s SupplyBatch
 		if err := rows.Scan(
 			&s.ID,
 			&s.CreatedAt,
 			&s.ActorID,
 			&s.WarehouseID,
-			&s.MaterialID,
-			&s.Qty,
-			&s.UnitCost,
-			&s.TotalCost,
 			&s.Comment,
 		); err != nil {
 			return nil, err
@@ -155,8 +167,8 @@ func (r *Repo) ListSuppliesByPeriod(ctx context.Context, from, to time.Time) ([]
 	return out, rows.Err()
 }
 
-// GetSupplyDetails возвращает строки одной поставки (по id) с джойнами.
-func (r *Repo) GetSupplyDetails(ctx context.Context, id int64) ([]SupplyDetail, error) {
+// GetSupplyDetails возвращает строки одной поставки (по batch_id) с джойнами.
+func (r *Repo) GetSupplyDetails(ctx context.Context, batchID int64) ([]SupplyDetail, error) {
 	rows, err := r.pool.Query(ctx, `
 		SELECT
 			s.created_at,
@@ -174,9 +186,9 @@ func (r *Repo) GetSupplyDetails(ctx context.Context, id int64) ([]SupplyDetail, 
 		JOIN material_categories c ON c.id = m.category_id
 		JOIN material_brands b ON b.id = m.brand_id
 		LEFT JOIN users u ON u.id = s.added_by
-		WHERE s.id = $1
+		WHERE s.batch_id = $1
 		ORDER BY s.created_at, m.name;
-	`, id)
+	`, batchID)
 	if err != nil {
 		return nil, err
 	}
@@ -201,4 +213,18 @@ func (r *Repo) GetSupplyDetails(ctx context.Context, id int64) ([]SupplyDetail, 
 		out = append(out, d)
 	}
 	return out, rows.Err()
+}
+
+func (r *Repo) CreateSupplyBatch(
+	ctx context.Context,
+	actorID, warehouseID int64,
+	comment string,
+) (int64, error) {
+	var id int64
+	err := r.pool.QueryRow(ctx, `
+		INSERT INTO supply_batches (added_by, warehouse_id, comment)
+		VALUES ($1,$2,$3)
+		RETURNING id
+	`, actorID, warehouseID, comment).Scan(&id)
+	return id, err
 }
