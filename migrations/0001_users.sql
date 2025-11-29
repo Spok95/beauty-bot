@@ -78,6 +78,16 @@ CREATE TABLE IF NOT EXISTS movements (
 );
 CREATE INDEX IF NOT EXISTS idx_movements_wh_mat_time ON movements(warehouse_id, material_id, created_at DESC);
 
+-- Поставки — шапка поставки (один Excel / одна корзина)
+CREATE TABLE IF NOT EXISTS supply_batches (
+                                              id           BIGSERIAL   PRIMARY KEY,
+                                              created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+                                              added_by     BIGINT      NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+                                              warehouse_id BIGINT      NOT NULL REFERENCES warehouses(id) ON DELETE RESTRICT,
+                                              comment      TEXT        NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_supply_batches_time ON supply_batches(created_at DESC);
+
 -- Поставки (приёмка материалов с ценой)
 CREATE TABLE IF NOT EXISTS supplies (
                                         id           BIGSERIAL   PRIMARY KEY,
@@ -87,11 +97,13 @@ CREATE TABLE IF NOT EXISTS supplies (
                                         material_id  BIGINT      NOT NULL REFERENCES materials(id)  ON DELETE RESTRICT,
                                         qty          NUMERIC(18,3) NOT NULL CHECK (qty > 0),
                                         unit_cost    NUMERIC(12,2) NOT NULL DEFAULT 0,
-                                        total_cost   NUMERIC(14,2) NOT NULL DEFAULT 0
+                                        total_cost   NUMERIC(14,2) NOT NULL DEFAULT 0,
+                                        comment      TEXT          NOT NULL DEFAULT '',
+                                        batch_id     BIGINT       REFERENCES supply_batches(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_supplies_wh_mat_time ON supplies(warehouse_id, material_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_supplies_batch ON supplies(batch_id);
 
--- Тарифы аренды
 -- Тарифы аренды (ступени)
 CREATE TABLE IF NOT EXISTS rent_rates (
                                           id BIGSERIAL PRIMARY KEY,
@@ -110,8 +122,6 @@ CREATE TABLE IF NOT EXISTS rent_rates (
 
 CREATE INDEX IF NOT EXISTS idx_rent_rates_key
     ON rent_rates(place, unit, with_subscription, min_qty);
-
--- ===== СИДЫ ПО ТЗ =====
 
 -- АБОНЕМЕНТЫ: ЗАЛ / ЧАС — каждая строка = конкретный лимит
 INSERT INTO rent_rates(
