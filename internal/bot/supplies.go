@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/Spok95/beauty-bot/internal/dialog"
 	"github.com/Spok95/beauty-bot/internal/domain/catalog"
@@ -32,6 +33,59 @@ func (b *Bot) showSuppliesMenu(chatID int64, editMsgID *int) {
 		m := tgbotapi.NewMessage(chatID, "Поставки — выберите действие")
 		m.ReplyMarkup = kb
 		b.send(m)
+	}
+}
+
+func (b *Bot) showSuppliesJournalList(
+	ctx context.Context,
+	chatID int64,
+	editMsgID *int,
+	from, to time.Time,
+) {
+	list, err := b.inventory.ListSuppliesByPeriod(ctx, from, to)
+	if err != nil {
+		text := "Ошибка загрузки журнала поставок."
+		if editMsgID != nil {
+			b.editTextAndClear(chatID, *editMsgID, text)
+		} else {
+			b.send(tgbotapi.NewMessage(chatID, text))
+		}
+		return
+	}
+	if len(list) == 0 {
+		text := "За выбранный период поставок не найдено."
+		if editMsgID != nil {
+			b.editTextAndClear(chatID, *editMsgID, text)
+		} else {
+			b.send(tgbotapi.NewMessage(chatID, text))
+		}
+		return
+	}
+
+	rows := [][]tgbotapi.InlineKeyboardButton{}
+	for _, s := range list {
+		label := s.CreatedAt.Format("02.01.2006 15:04")
+		if strings.TrimSpace(s.Comment) != "" {
+			label = fmt.Sprintf("%s, %s", label, s.Comment)
+		}
+		rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(label, fmt.Sprintf("sup:journal:%d", s.ID)),
+		))
+	}
+	rows = append(rows, navKeyboard(false, true).InlineKeyboard[0])
+
+	kb := tgbotapi.NewInlineKeyboardMarkup(rows...)
+	text := fmt.Sprintf("Журнал поставок\nПериод: %s — %s (включительно)",
+		from.Format("02.01.2006"),
+		to.AddDate(0, 0, -1).Format("02.01.2006"),
+	)
+
+	if editMsgID != nil {
+		b.send(tgbotapi.NewEditMessageTextAndMarkup(chatID, *editMsgID, text, kb))
+	} else {
+		msg := tgbotapi.NewMessage(chatID, text)
+		msg.ReplyMarkup = kb
+		b.send(msg)
 	}
 }
 
@@ -222,6 +276,98 @@ func (b *Bot) handleSuppliesImportExcel(ctx context.Context, chatID int64, u *us
 
 	_ = b.states.Set(ctx, chatID, dialog.StateSupMenu, dialog.Payload{})
 	b.showSuppliesMenu(chatID, nil)
+}
+
+func (b *Bot) exportSupplyExcel(ctx context.Context, chatID int64, msgID int, supplyID int64) {
+	items, err := b.inventory.GetSupplyDetails(ctx, supplyID)
+	if err != nil {
+		b.editTextAndClear(chatID, msgID, "Ошибка загрузки данных поставки.")
+		return
+	}
+	if len(items) == 0 {
+		b.editTextAndClear(chatID, msgID, "Поставка не найдена.")
+		return
+	}
+
+	first := items[0]
+
+	// Заголовок: "Поставка + комментарий"
+	title := "Поставка"
+	if c := strings.TrimSpace(first.Comment); c != "" {
+		title = fmt.Sprintf("Поставка %s", c)
+	}
+
+	f := excelize.NewFile()
+	defer func() { _ = f.Close() }()
+
+	sheet := f.GetSheetName(f.GetActiveSheetIndex())
+
+	// Шапка (строка с общими данными)
+	headerText := fmt.Sprintf(
+		"%s\nСклад: %s\nКто провёл: %s\nДата: %s",
+		title,
+		first.WarehouseName,
+		first.ActorName,
+		first.CreatedAt.Format("02.01.2006 15:04"),
+	)
+	if err := f.SetCellValue(sheet, "A1", headerText); err != nil {
+		b.editTextAndClear(chatID, msgID, "Ошибка формирования файла (заголовок).")
+		return
+	}
+
+	// Заголовок таблицы
+	headerRow := []interface{}{"Дата", "Время", "Категория", "Бренд", "Материал", "Количество", "Ед."}
+	if err := f.SetSheetRow(sheet, "A3", &headerRow); err != nil {
+		b.editTextAndClear(chatID, msgID, "Ошибка формирования файла (заголовок таблицы).")
+		return
+	}
+
+	// Строки
+	row := 4
+	for _, it := range items {
+		date := it.CreatedAt.Format("02.01.2006")
+		timeStr := it.CreatedAt.Format("15:04:05")
+		excelRow := []interface{}{
+			date,
+			timeStr,
+			it.CategoryName,
+			it.BrandName,
+			it.MaterialName,
+			it.Qty,
+			it.Unit,
+		}
+		cell, err := excelize.CoordinatesToCellName(1, row)
+		if err != nil {
+			b.editTextAndClear(chatID, msgID, "Ошибка формирования файла (ячейка).")
+			return
+		}
+		if err := f.SetSheetRow(sheet, cell, &excelRow); err != nil {
+			b.editTextAndClear(chatID, msgID, "Ошибка формирования файла (строка).")
+			return
+		}
+		row++
+	}
+
+	buf := &bytes.Buffer{}
+	if err := f.Write(buf); err != nil {
+		b.editTextAndClear(chatID, msgID, "Ошибка записи файла.")
+		return
+	}
+
+	fileName := fmt.Sprintf("supply_%d_%s.xlsx",
+		supplyID,
+		time.Now().Format("20060102_150405"),
+	)
+
+	doc := tgbotapi.NewDocument(chatID, tgbotapi.FileBytes{
+		Name:  fileName,
+		Bytes: buf.Bytes(),
+	})
+	doc.Caption = title
+
+	b.send(doc)
+	b.editTextWithNav(chatID, msgID,
+		fmt.Sprintf("Выгружена поставка №%d.", supplyID))
 }
 
 // showSuppliesCart Показ корзины поставки: список позиций и итог

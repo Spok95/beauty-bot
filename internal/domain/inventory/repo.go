@@ -3,6 +3,7 @@ package inventory
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -118,4 +119,86 @@ func (r *Repo) GetBalance(ctx context.Context, warehouseID, materialID int64) (f
 		return 0, nil
 	}
 	return qty, err
+}
+
+// ListSuppliesByPeriod возвращает список поставок за период [from, to).
+func (r *Repo) ListSuppliesByPeriod(ctx context.Context, from, to time.Time) ([]Supply, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT id, created_at, added_by, warehouse_id, material_id, qty, unit_cost, total_cost, comment
+		FROM supplies
+		WHERE created_at >= $1 AND created_at < $2
+		ORDER BY created_at DESC, id DESC
+	`, from, to)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []Supply
+	for rows.Next() {
+		var s Supply
+		if err := rows.Scan(
+			&s.ID,
+			&s.CreatedAt,
+			&s.ActorID,
+			&s.WarehouseID,
+			&s.MaterialID,
+			&s.Qty,
+			&s.UnitCost,
+			&s.TotalCost,
+			&s.Comment,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
+// GetSupplyDetails возвращает строки одной поставки (по id) с джойнами.
+func (r *Repo) GetSupplyDetails(ctx context.Context, id int64) ([]SupplyDetail, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT
+			s.created_at,
+			COALESCE(u.username, '') AS actor_name,
+			w.name AS warehouse_name,
+			c.name AS category_name,
+			b.name AS brand_name,
+			m.name AS material_name,
+			m.unit,
+			s.qty,
+			s.comment
+		FROM supplies s
+		JOIN warehouses w ON w.id = s.warehouse_id
+		JOIN materials m ON m.id = s.material_id
+		JOIN material_categories c ON c.id = m.category_id
+		JOIN material_brands b ON b.id = m.brand_id
+		LEFT JOIN users u ON u.id = s.added_by
+		WHERE s.id = $1
+		ORDER BY s.created_at, m.name;
+	`, id)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []SupplyDetail
+	for rows.Next() {
+		var d SupplyDetail
+		if err := rows.Scan(
+			&d.CreatedAt,
+			&d.ActorName,
+			&d.WarehouseName,
+			&d.CategoryName,
+			&d.BrandName,
+			&d.MaterialName,
+			&d.Unit,
+			&d.Qty,
+			&d.Comment,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
 }

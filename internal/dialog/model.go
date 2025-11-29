@@ -52,6 +52,10 @@ const (
 	StateSupImportComment State = "sup_import_comment" // ввод комментария к поставке (например, поставщик)
 	StateSupImportFile    State = "sup_import_file"    // ожидание файла с поступлением (используем позже)
 
+	// Журнал поставок
+	StateSupJournalFrom State = "sup_journal_from" // ждём дату начала
+	StateSupJournalTo   State = "sup_journal_to"   // ждём дату конца
+
 	// Расход/Аренда (мастер)
 	StateConsPlace        State = "cons_place"       // выбор: зал/кабинет
 	StateConsQty          State = "cons_qty"         // кол-во часов/дней (int)
