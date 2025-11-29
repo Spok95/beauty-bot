@@ -2054,7 +2054,7 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 			mat := int64(it["mat_id"].(float64))
 			qty := int64(it["qty"].(float64))
 			price := it["price"].(float64)
-			if err := b.inventory.ReceiveWithCost(ctx, u.ID, wh, mat, float64(qty), price, "supply"); err != nil {
+			if err := b.inventory.ReceiveWithCost(ctx, u.ID, wh, mat, float64(qty), price, "supply", ""); err != nil {
 				b.editTextAndClear(fromChat, cb.Message.MessageID, "Ошибка приёмки: "+err.Error())
 				_ = b.answerCallback(cb, "Ошибка", true)
 				return

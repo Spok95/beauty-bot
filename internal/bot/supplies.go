@@ -199,7 +199,7 @@ func (b *Bot) handleSuppliesImportExcel(ctx context.Context, chatID int64, u *us
 		if comment != "" {
 			note = fmt.Sprintf("supply_excel: %s", comment)
 		}
-		if err := b.inventory.ReceiveWithCost(ctx, u.ID, warehouseID, matID, qty, 0, note); err != nil {
+		if err := b.inventory.ReceiveWithCost(ctx, u.ID, warehouseID, matID, qty, 0, note, comment); err != nil {
 			b.send(tgbotapi.NewMessage(chatID,
 				fmt.Sprintf("Ошибка приёмки в строке %d (материал %d): %v", i+1, matID, err)))
 			return

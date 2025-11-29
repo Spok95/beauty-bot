@@ -56,7 +56,7 @@ func (r *Repo) WriteOff(ctx context.Context, actorID, warehouseID, materialID in
 	return r.apply(ctx, actorID, warehouseID, materialID, -qty, MoveOut, note)
 }
 
-func (r *Repo) ReceiveWithCost(ctx context.Context, actorID, warehouseID, materialID int64, qty float64, unitCost float64, note string) error {
+func (r *Repo) ReceiveWithCost(ctx context.Context, actorID, warehouseID, materialID int64, qty float64, unitCost float64, note string, comment string) error {
 	if qty <= 0 {
 		return fmt.Errorf("qty must be > 0")
 	}
@@ -87,9 +87,9 @@ func (r *Repo) ReceiveWithCost(ctx context.Context, actorID, warehouseID, materi
 	// supplies (стоимость поставки)
 	total := unitCost * qty
 	if _, err = tx.Exec(ctx, `
-		INSERT INTO supplies (added_by, warehouse_id, material_id, qty, unit_cost, total_cost)
-		VALUES ($1,$2,$3,$4,$5,$6)
-	`, actorID, warehouseID, materialID, qty, unitCost, total); err != nil {
+		INSERT INTO supplies (added_by, warehouse_id, material_id, qty, unit_cost, total_cost, comment)
+		VALUES ($1,$2,$3,$4,$5,$6,$7)
+	`, actorID, warehouseID, materialID, qty, unitCost, total, comment); err != nil {
 		return err
 	}
 

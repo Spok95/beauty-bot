@@ -87,7 +87,8 @@ CREATE TABLE IF NOT EXISTS supplies (
                                         material_id  BIGINT      NOT NULL REFERENCES materials(id)  ON DELETE RESTRICT,
                                         qty          NUMERIC(18,3) NOT NULL CHECK (qty > 0),
                                         unit_cost    NUMERIC(12,2) NOT NULL DEFAULT 0,
-                                        total_cost   NUMERIC(14,2) NOT NULL DEFAULT 0
+                                        total_cost   NUMERIC(14,2) NOT NULL DEFAULT 0,
+                                        comment      TEXT          NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_supplies_wh_mat_time ON supplies(warehouse_id, material_id, created_at DESC);
 
