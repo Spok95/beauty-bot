@@ -200,6 +200,20 @@ WHERE id = $1
 	return nil
 }
 
+// AddMaterialsUsage накапливает сумму материалов по абонементу
+// и обновляет флаг threshold_met.
+func (r *Repo) AddMaterialsUsage(ctx context.Context, id int64, delta float64) error {
+	const q = `
+UPDATE subscriptions
+SET materials_sum_total      = COALESCE(materials_sum_total, 0) + $2,
+    threshold_met            = (COALESCE(materials_sum_total, 0) + $2) >= threshold_materials_total,
+    updated_at               = NOW()
+WHERE id = $1;
+`
+	_, err := r.db.Exec(ctx, q, id, delta)
+	return err
+}
+
 func (r *Repo) CreateOrSetTotal(ctx context.Context, userID int64, place, unit, month string, total int) (int64, error) {
 	// Админский режим: считаем, что он задаёт один актуальный абонемент на месяц.
 	// Удаляем все существующие записи по этому ключу и создаём одну новую.
