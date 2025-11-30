@@ -2783,6 +2783,38 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 			}
 		}
 
+		// Добавляем сумму материалов к абонементам
+		if partsRaw, ok := st.Payload["rent_parts"]; ok && partsRaw != nil && b.subs != nil {
+			if parts, ok := partsRaw.([]any); ok {
+				for _, pr := range parts {
+					mp, ok := pr.(map[string]any)
+					if !ok {
+						continue
+					}
+
+					withSub, _ := mp["with_sub"].(bool)
+					if !withSub {
+						continue
+					}
+
+					subIDF, okID := mp["sub_id"].(float64)
+					matsF, okMat := mp["materials_used"].(float64)
+					if !okID || !okMat {
+						continue
+					}
+
+					if matsF <= 0 {
+						continue
+					}
+
+					subID := int64(subIDF)
+
+					// Ошибку здесь можно залогировать, но не валить весь консумпшен.
+					_ = b.subs.AddMaterialsUsage(ctx, subID, matsF)
+				}
+			}
+		}
+
 		pairs := make([][2]int64, 0, len(items))
 		// позиции + списание
 		for _, it := range items {
