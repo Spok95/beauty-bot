@@ -2535,7 +2535,7 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 		}
 
 		// 3) расчёт по ступеням для всех частей
-		rent, rounded, needTotal, partResults, err := b.cons.ComputeRentSplit(ctx, place, unit, mats, parts)
+		calcRent, rounded, needTotal, partResults, err := b.cons.ComputeRentSplit(ctx, place, unit, mats, parts)
 		if err != nil || len(partResults) == 0 {
 			b.send(tgbotapi.NewMessage(fromChat,
 				fmt.Sprintf("⚠️ Нет активных тарифов для: %s / %s (%s). Настройте тарифы.",
@@ -2545,14 +2545,24 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 				)))
 			return
 		}
-		total := rent + mats
+		// аренда к оплате: берем только части БЕЗ абонемента
+		rentToPay := 0.0
+		for i, pr := range partResults {
+			if !metas[i].WithSub {
+				rentToPay += pr.Rent
+			}
+		}
+		total := mats + rentToPay
 
 		// 4) сохраняем в payload
 		st.Payload["with_sub"] = withSub
 		st.Payload["mats_sum"] = mats
 		st.Payload["mats_rounded"] = rounded
 		st.Payload["need_total"] = needTotal
-		st.Payload["rent"] = rent
+
+		// при желании можно хранить оба значения
+		st.Payload["rent_calc"] = calcRent // «номинальная» аренда, необязательно использовать
+		st.Payload["rent"] = rentToPay     // аренда именно к оплате
 		st.Payload["total"] = total
 
 		// детальная разбивка (для прозрачности и на будущее, плюс для confirm)
@@ -2610,22 +2620,32 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 				noSubQty += m.Qty
 			}
 
-			cond := "условие по материалам не выполнено"
-			if pr.ThresholdMet {
-				cond = "условие по материалам выполнено"
+			// аренда по этой части К ОПЛАТЕ
+			lineRent := pr.Rent
+			cond := ""
+
+			if m.WithSub {
+				// аренда оплачена заранее абонементом
+				lineRent = 0
+				cond = "оплачено абонементом"
+			} else {
+				cond = map[bool]string{
+					true:  "условие по материалам выполнено",
+					false: "условие по материалам не выполнено",
+				}[pr.ThresholdMet]
 			}
 
 			lines = append(lines,
 				fmt.Sprintf(
 					"• %d %s %s: %.2f ₽ (%.2f ₽ за единицу, %s; порог %.0f ₽, в зачёт пошло %.0f ₽)",
 					m.Qty, unitRU[unit], label,
-					pr.Rent, price, cond, pr.Need, pr.MaterialsUsed,
+					lineRent, price, cond, pr.Need, pr.MaterialsUsed,
 				),
 			)
 		}
 
 		lines = append(lines, "")
-		lines = append(lines, fmt.Sprintf("Аренда всего: %.2f ₽", rent))
+		lines = append(lines, fmt.Sprintf("Аренда всего: %.2f ₽", rentToPay))
 		lines = append(lines, fmt.Sprintf("Итого к оплате: %.2f ₽", total))
 
 		// предупреждение, если часть часов ушла без абонемента
@@ -2784,33 +2804,55 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 		}
 
 		// Добавляем сумму материалов к абонементам
-		if partsRaw, ok := st.Payload["rent_parts"]; ok && partsRaw != nil && b.subs != nil {
+		if partsRaw, ok := st.Payload["rent_parts"]; ok && partsRaw != nil && b.subs != nil && mats > 0 {
 			if parts, ok := partsRaw.([]any); ok {
+				// Считаем общий объём часов/дней по частям с абонементом
+				totalSubQty := 0
 				for _, pr := range parts {
 					mp, ok := pr.(map[string]any)
 					if !ok {
 						continue
 					}
-
 					withSub, _ := mp["with_sub"].(bool)
 					if !withSub {
 						continue
 					}
-
-					subIDF, okID := mp["sub_id"].(float64)
-					matsF, okMat := mp["materials_used"].(float64)
-					if !okID || !okMat {
+					qtyF, okQty := mp["qty"].(float64)
+					if !okQty {
 						continue
 					}
+					totalSubQty += int(qtyF)
+				}
 
-					if matsF <= 0 {
-						continue
+				if totalSubQty > 0 {
+					for _, pr := range parts {
+						mp, ok := pr.(map[string]any)
+						if !ok {
+							continue
+						}
+
+						withSub, _ := mp["with_sub"].(bool)
+						if !withSub {
+							continue
+						}
+
+						subIDF, okID := mp["sub_id"].(float64)
+						qtyF, okQty := mp["qty"].(float64)
+						if !okID || !okQty {
+							continue
+						}
+						partQty := int(qtyF)
+						if partQty <= 0 {
+							continue
+						}
+
+						subID := int64(subIDF)
+						// Фактическая сумма материалов, приходящаяся на этот абонемент
+						matsForSub := mats * float64(partQty) / float64(totalSubQty)
+
+						// Ошибку можно залогировать, но не валить весь консумпшен
+						_ = b.subs.AddMaterialsUsage(ctx, subID, matsForSub)
 					}
-
-					subID := int64(subIDF)
-
-					// Ошибку здесь можно залогировать, но не валить весь консумпшен.
-					_ = b.subs.AddMaterialsUsage(ctx, subID, matsF)
 				}
 			}
 		}
