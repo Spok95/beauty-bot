@@ -2952,6 +2952,7 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 		// Объём абонемента = min_qty (min_qty == max_qty по нашей модели)
 		qty := rate.MinQty
 		st.Payload["qty"] = float64(qty)
+		st.Payload["threshold_per_unit"] = rate.Threshold
 		_ = b.states.Set(ctx, fromChat, dialog.StateSubBuyConfirm, st.Payload)
 
 		unitFull := map[string]string{"hour": "часов", "day": "дней"}[unit]
@@ -2990,9 +2991,19 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 		place := st.Payload["place"].(string)
 		unit := st.Payload["unit"].(string)
 		qty := int(st.Payload["qty"].(float64))
+		thrPerUnit, _ := st.Payload["threshold_per_unit"].(float64)
+		thresholdTotal := float64(qty) * thrPerUnit
 		month := time.Now().Format("2006-01")
 
-		if _, err := b.subs.AddOrCreateTotal(ctx, u.ID, place, unit, month, qty); err != nil {
+		if _, err := b.subs.AddOrCreateTotal(
+			ctx,
+			u.ID,
+			place,
+			unit,
+			month,
+			qty,
+			thresholdTotal,
+		); err != nil {
 			b.editTextAndClear(fromChat, cb.Message.MessageID, "Не удалось оформить абонемент.")
 			_ = b.answerCallback(cb, "Ошибка", true)
 			return

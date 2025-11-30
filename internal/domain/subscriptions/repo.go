@@ -168,31 +168,58 @@ func (r *Repo) CreateOrSetTotal(ctx context.Context, userID int64, place, unit, 
 
 // AddOrCreateTotal увеличивает total_qty на qty (или создаёт запись за month)
 // plan_limit фиксируем как номинальный объём плана (qty при покупке).
-func (r *Repo) AddOrCreateTotal(ctx context.Context, userID int64, place, unit, month string, qty int) (*Subscription, error) {
+func (r *Repo) AddOrCreateTotal(
+	ctx context.Context,
+	userID int64,
+	place, unit, month string,
+	qty int,
+	thresholdTotal float64, // НОВЫЙ аргумент
+) (*Subscription, error) {
 	const q = `
-INSERT INTO subscriptions(user_id, place, unit, month, plan_limit, total_qty, used_qty)
-VALUES($1,$2,$3,$4,$5,$6,0)
+INSERT INTO subscriptions(
+    user_id,
+    place,
+    unit,
+    month,
+    plan_limit,
+    total_qty,
+    used_qty,
+    threshold_materials_total
+)
+VALUES($1,$2,$3,$4,$5,$6,0,$7)
 ON CONFLICT (user_id, place, unit, month, plan_limit)
-DO UPDATE SET total_qty = subscriptions.total_qty + EXCLUDED.total_qty,
-              updated_at = NOW()
-RETURNING id,
-          user_id,
-          place,
-          unit,
-          month,
-          plan_limit,
-          total_qty,
-          used_qty,
-          threshold_materials_total,
-          materials_sum_total,
-          threshold_met,
-          created_at,
-          updated_at;
+DO UPDATE SET
+    total_qty = subscriptions.total_qty + EXCLUDED.total_qty,
+    threshold_materials_total = subscriptions.threshold_materials_total + EXCLUDED.threshold_materials_total,
+    updated_at = NOW()
+RETURNING
+    id,
+    user_id,
+    place,
+    unit,
+    month,
+    plan_limit,
+    total_qty,
+    used_qty,
+    threshold_materials_total,
+    materials_sum_total,
+    threshold_met,
+    created_at,
+    updated_at;
 `
 
 	planLimit := qty
 
-	row := r.db.QueryRow(ctx, q, userID, place, unit, month, planLimit, qty)
+	row := r.db.QueryRow(ctx, q,
+		userID,
+		place,
+		unit,
+		month,
+		planLimit,
+		qty,
+		thresholdTotal,
+	)
+
 	var s Subscription
 	if err := row.Scan(
 		&s.ID,
