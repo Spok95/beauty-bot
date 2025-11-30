@@ -13,6 +13,10 @@ type Subscription struct {
 	TotalQty  int // всего куплено часов/дней по этому плану за месяц
 	UsedQty   int
 
+	ThresholdMaterialsTotal float64 // threshold_materials_total
+	MaterialsSumTotal       float64 // materials_sum_total
+	ThresholdMet            bool    // threshold_met
+
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }

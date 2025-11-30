@@ -14,10 +14,25 @@ type Repo struct{ db *pgxpool.Pool }
 func NewRepo(db *pgxpool.Pool) *Repo { return &Repo{db: db} }
 
 func (r *Repo) ListByUserMonth(ctx context.Context, userID int64, month string) ([]Subscription, error) {
-	const q = `SELECT id,user_id,place,unit,month,plan_limit,total_qty,used_qty,created_at,updated_at
-	           FROM subscriptions
-	           WHERE user_id=$1 AND month=$2
-	           ORDER BY place,unit,plan_limit`
+	const q = `
+SELECT id,
+       user_id,
+       place,
+       unit,
+       month,
+       plan_limit,
+       total_qty,
+       used_qty,
+       threshold_materials_total,
+       materials_sum_total,
+       threshold_met,
+       created_at,
+       updated_at
+FROM subscriptions
+WHERE user_id = $1
+  AND month   = $2
+ORDER BY place, unit, plan_limit;
+`
 	rows, err := r.db.Query(ctx, q, userID, month)
 	if err != nil {
 		return nil, err
@@ -36,6 +51,9 @@ func (r *Repo) ListByUserMonth(ctx context.Context, userID int64, month string) 
 			&s.PlanLimit,
 			&s.TotalQty,
 			&s.UsedQty,
+			&s.ThresholdMaterialsTotal,
+			&s.MaterialsSumTotal,
+			&s.ThresholdMet,
 			&s.CreatedAt,
 			&s.UpdatedAt,
 		); err != nil {
@@ -54,7 +72,19 @@ func (r *Repo) ListActiveByPlaceUnitMonth(
 	place, unit, month string,
 ) ([]Subscription, error) {
 	const q = `
-SELECT id, user_id, place, unit, month, plan_limit, total_qty, used_qty, created_at, updated_at
+SELECT id,
+       user_id,
+       place,
+       unit,
+       month,
+       plan_limit,
+       total_qty,
+       used_qty,
+       threshold_materials_total,
+       materials_sum_total,
+       threshold_met,
+       created_at,
+       updated_at
 FROM subscriptions
 WHERE user_id = $1
   AND place   = $2
@@ -81,6 +111,9 @@ ORDER BY created_at;
 			&s.PlanLimit,
 			&s.TotalQty,
 			&s.UsedQty,
+			&s.ThresholdMaterialsTotal,
+			&s.MaterialsSumTotal,
+			&s.ThresholdMet,
 			&s.CreatedAt,
 			&s.UpdatedAt,
 		); err != nil {
@@ -142,7 +175,20 @@ VALUES($1,$2,$3,$4,$5,$6,0)
 ON CONFLICT (user_id, place, unit, month, plan_limit)
 DO UPDATE SET total_qty = subscriptions.total_qty + EXCLUDED.total_qty,
               updated_at = NOW()
-RETURNING id,user_id,place,unit,month,plan_limit,total_qty,used_qty,created_at,updated_at;`
+RETURNING id,
+          user_id,
+          place,
+          unit,
+          month,
+          plan_limit,
+          total_qty,
+          used_qty,
+          threshold_materials_total,
+          materials_sum_total,
+          threshold_met,
+          created_at,
+          updated_at;
+`
 
 	planLimit := qty
 
@@ -157,6 +203,9 @@ RETURNING id,user_id,place,unit,month,plan_limit,total_qty,used_qty,created_at,u
 		&s.PlanLimit,
 		&s.TotalQty,
 		&s.UsedQty,
+		&s.ThresholdMaterialsTotal,
+		&s.MaterialsSumTotal,
+		&s.ThresholdMet,
 		&s.CreatedAt,
 		&s.UpdatedAt,
 	); err != nil {
