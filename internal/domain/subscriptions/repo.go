@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -62,6 +63,62 @@ ORDER BY place, unit, plan_limit;
 		out = append(out, s)
 	}
 	return out, nil
+}
+
+// LastByUserPlaceUnit возвращает последний абонемент мастера по помещению+единице
+// (по дате/месяцу, с учётом текущей таблицы subscriptions).
+func (r *Repo) LastByUserPlaceUnit(
+	ctx context.Context,
+	userID int64,
+	place, unit string,
+) (*Subscription, error) {
+	const q = `
+		SELECT
+		       id,
+		       user_id,
+		       place,
+		       unit,
+		       month,
+		       plan_limit,
+		       total_qty,
+		       used_qty,
+		       threshold_materials_total,
+		       materials_sum_total,
+		       threshold_met,
+		       created_at,
+		       updated_at
+		FROM subscriptions
+		WHERE user_id = $1
+		  AND place   = $2
+		  AND unit    = $3
+		ORDER BY month DESC, created_at DESC, id DESC
+		LIMIT 1;
+	`
+	row := r.db.QueryRow(ctx, q, userID, place, unit)
+
+	var s Subscription
+	if err := row.Scan(
+		&s.ID,
+		&s.UserID,
+		&s.Place,
+		&s.Unit,
+		&s.Month,
+		&s.PlanLimit,
+		&s.TotalQty,
+		&s.UsedQty,
+		&s.ThresholdMaterialsTotal,
+		&s.MaterialsSumTotal,
+		&s.ThresholdMet,
+		&s.CreatedAt,
+		&s.UpdatedAt,
+	); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	return &s, nil
 }
 
 // ListActiveByPlaceUnitMonth возвращает все НЕвыработанные абонементы мастера

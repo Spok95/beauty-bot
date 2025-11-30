@@ -2951,21 +2951,60 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 
 		// Объём абонемента = min_qty (min_qty == max_qty по нашей модели)
 		qty := rate.MinQty
+
+		// Текущий мастер
+		u, _ := b.users.GetByTelegramID(ctx, cb.From.ID)
+		if u == nil || u.Status != users.StatusApproved || u.Role != users.RoleMaster {
+			b.editTextAndClear(fromChat, cb.Message.MessageID, "Доступ запрещён.")
+			_ = b.answerCallback(cb, "Ошибка", true)
+			return
+		}
+
+		// Ищем последний абонемент по этому помещению и единице
+		lastSub, err := b.subs.LastByUserPlaceUnit(ctx, u.ID, place, unit)
+		if err != nil {
+			b.editTextAndClear(fromChat, cb.Message.MessageID, "Ошибка загрузки абонементов.")
+			_ = b.answerCallback(cb, "Ошибка", true)
+			return
+		}
+
+		// Порог и стоимость для нового абонемента
+		thresholdPerUnit := rate.Threshold                // 100 / 1000 и т.п.
+		thresholdTotal := float64(qty) * thresholdPerUnit // общий порог по абонементу
+		var pricePerUnit float64                          // цена аренды за час/день
+		if lastSub == nil || lastSub.ThresholdMet {       // абонемента не было или условие выполнено
+			pricePerUnit = rate.PriceWith
+		} else { // прошлый абонемент не выполнил порог
+			pricePerUnit = rate.PriceOwn
+		}
+		totalCost := float64(qty) * pricePerUnit
+
+		// Сохраняем всё нужное в состоянии (используем позже в confirm + заявка админу)
 		st.Payload["qty"] = float64(qty)
-		st.Payload["threshold_per_unit"] = rate.Threshold
+		st.Payload["threshold_per_unit"] = thresholdPerUnit
+		st.Payload["threshold_total"] = thresholdTotal
+		st.Payload["price_per_unit"] = pricePerUnit
+		st.Payload["total_cost"] = totalCost
 		_ = b.states.Set(ctx, fromChat, dialog.StateSubBuyConfirm, st.Payload)
 
 		unitFull := map[string]string{"hour": "часов", "day": "дней"}[unit]
 		unitShort := map[string]string{"hour": "ч", "day": "дн"}[unit]
 
+		placeName := map[string]string{"hall": "Общий зал", "cabinet": "Кабинет"}[place]
+
 		txt := fmt.Sprintf(
-			"Абонемент:\nПомещение: %s\nЛимит: %d %s в месяц\nПорог материалов: %.0f ₽ на %s\nЦена при выполнении порога: %.2f ₽ за %s\nЦена без выполнения порога: %.2f ₽ за %s\n\nОформить этот абонемент?",
-			map[string]string{"hall": "Общий зал", "cabinet": "Кабинет"}[place],
+			"Абонемент:\n"+
+				"Помещение: %s\n"+
+				"Лимит: %d %s в месяц\n"+
+				"Порог материалов: %.2f ₽ по %.2f ₽ за %s\n"+
+				"Цена аренды за %s: %.2f ₽\n"+
+				"Стоимость абонемента: %.2f ₽\n\n"+
+				"Желаете оплатить и приобрести этот абонемент?",
+			placeName,
 			qty, unitFull,
-			rate.Threshold,
-			unitShort,
-			rate.PriceWith, unitShort,
-			rate.PriceOwn, unitShort,
+			thresholdTotal, thresholdPerUnit, unitShort,
+			unitShort, pricePerUnit,
+			totalCost,
 		)
 
 		kb := tgbotapi.NewInlineKeyboardMarkup(
