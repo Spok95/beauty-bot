@@ -233,6 +233,9 @@ CREATE TABLE IF NOT EXISTS subscriptions (
                                              plan_limit  INT         NOT NULL,   -- номинальный лимит плана (30, 50, ...)
                                              total_qty   INT         NOT NULL,   -- всего куплено часов/дней по этому плану за месяц
                                              used_qty    INT         NOT NULL DEFAULT 0,
+                                             threshold_materials_total NUMERIC(14,2) NOT NULL DEFAULT 0, -- общий порог (часы * порог/час)
+                                             materials_sum_total       NUMERIC(14,2) NOT NULL DEFAULT 0, -- фактически набранная сумма за материалы
+                                             threshold_met             BOOLEAN       NOT NULL DEFAULT FALSE, -- условие выполнено/нет
                                              created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                                              updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                                              CONSTRAINT uq_subs UNIQUE (user_id, place, unit, month, plan_limit)
