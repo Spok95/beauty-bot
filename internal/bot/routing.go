@@ -2628,20 +2628,30 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 				// аренда оплачена заранее абонементом
 				lineRent = 0
 				cond = "оплачено абонементом"
+
+				// без указания цены за единицу
+				lines = append(lines,
+					fmt.Sprintf(
+						"• %d %s %s: %.2f ₽ (%s; порог %.0f ₽, в зачёт пошло %.0f ₽)",
+						m.Qty, unitRU[unit], label,
+						lineRent, cond, pr.Need, pr.MaterialsUsed,
+					),
+				)
 			} else {
+				// обычная аренда без абонемента, тут всё как раньше
 				cond = map[bool]string{
 					true:  "условие по материалам выполнено",
 					false: "условие по материалам не выполнено",
 				}[pr.ThresholdMet]
-			}
 
-			lines = append(lines,
-				fmt.Sprintf(
-					"• %d %s %s: %.2f ₽ (%.2f ₽ за единицу, %s; порог %.0f ₽, в зачёт пошло %.0f ₽)",
-					m.Qty, unitRU[unit], label,
-					lineRent, price, cond, pr.Need, pr.MaterialsUsed,
-				),
-			)
+				lines = append(lines,
+					fmt.Sprintf(
+						"• %d %s %s: %.2f ₽ (%.2f ₽ за единицу, %s; порог %.0f ₽, в зачёт пошло %.0f ₽)",
+						m.Qty, unitRU[unit], label,
+						lineRent, price, cond, pr.Need, pr.MaterialsUsed,
+					),
+				)
+			}
 		}
 
 		lines = append(lines, "")
@@ -2998,6 +3008,46 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 		unit := "hour"
 		if place == "cabinet" {
 			unit = "day"
+		}
+
+		// Текущий мастер
+		u, _ := b.users.GetByTelegramID(ctx, cb.From.ID)
+		if u == nil || u.Status != users.StatusApproved || u.Role != users.RoleMaster {
+			b.editTextAndClear(fromChat, cb.Message.MessageID, "Доступ запрещён.")
+			_ = b.answerCallback(cb, "Ошибка", true)
+			return
+		}
+
+		// Проверяем, есть ли активный абонемент по этому помещению в текущем месяце
+		month := time.Now().Format("2006-01")
+		subs, err := b.subs.ListByUserMonth(ctx, u.ID, month)
+		if err != nil {
+			b.editTextAndClear(fromChat, cb.Message.MessageID, "Ошибка загрузки абонементов.")
+			_ = b.answerCallback(cb, "Ошибка", true)
+			return
+		}
+
+		for _, s := range subs {
+			if s.Place == place && s.Unit == unit {
+				left := s.TotalQty - s.UsedQty
+				if left > 0 {
+					if left < 0 {
+						left = 0
+					}
+					unitRU := map[string]string{"hour": "ч", "day": "дн"}[unit]
+					placeName := map[string]string{"hall": "общего зала", "cabinet": "кабинета"}[place]
+
+					b.editTextAndClear(fromChat, cb.Message.MessageID,
+						fmt.Sprintf(
+							"У вас уже есть действующий абонемент для %s на текущий месяц: %d/%d (остаток %d %s).\n"+
+								"Новый абонемент можно купить только после полного использования текущего.",
+							placeName, s.UsedQty, s.TotalQty, left, unitRU,
+						),
+					)
+					_ = b.answerCallback(cb, "Абонемент ещё активен", true)
+					return
+				}
+			}
 		}
 
 		// Тарифы-абонементы для выбранного помещения: одна строка = один конкретный объём

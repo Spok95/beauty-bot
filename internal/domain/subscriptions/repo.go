@@ -237,77 +237,43 @@ func (r *Repo) CreateOrSetTotal(ctx context.Context, userID int64, place, unit, 
 	return id, nil
 }
 
-// AddOrCreateTotal увеличивает total_qty на qty (или создаёт запись за month)
-// plan_limit фиксируем как номинальный объём плана (qty при покупке).
+// AddOrCreateTotal теперь всегда создаёт НОВУЮ запись
 func (r *Repo) AddOrCreateTotal(
 	ctx context.Context,
 	userID int64,
 	place, unit, month string,
 	qty int,
-	thresholdTotal float64, // НОВЫЙ аргумент
+	thresholdTotal float64,
 ) (*Subscription, error) {
-	const q = `
-INSERT INTO subscriptions(
-    user_id,
-    place,
-    unit,
-    month,
-    plan_limit,
-    total_qty,
-    used_qty,
-    threshold_materials_total
-)
-VALUES($1,$2,$3,$4,$5,$6,0,$7)
-ON CONFLICT (user_id, place, unit, month, plan_limit)
-DO UPDATE SET
-    total_qty = subscriptions.total_qty + EXCLUDED.total_qty,
-    threshold_materials_total = subscriptions.threshold_materials_total + EXCLUDED.threshold_materials_total,
-    updated_at = NOW()
-RETURNING
-    id,
-    user_id,
-    place,
-    unit,
-    month,
-    plan_limit,
-    total_qty,
-    used_qty,
-    threshold_materials_total,
-    materials_sum_total,
-    threshold_met,
-    created_at,
-    updated_at;
-`
+	s := &Subscription{
+		UserID:                  userID,
+		Place:                   place,
+		Unit:                    unit,
+		Month:                   month,
+		PlanLimit:               qty,
+		TotalQty:                qty, // для одного абона = лимиту
+		UsedQty:                 0,
+		ThresholdMaterialsTotal: thresholdTotal,
+		MaterialsSumTotal:       0,
+		ThresholdMet:            false,
+	}
 
-	planLimit := qty
-
-	row := r.db.QueryRow(ctx, q,
-		userID,
-		place,
-		unit,
-		month,
-		planLimit,
-		qty,
-		thresholdTotal,
+	row := r.db.QueryRow(ctx, `
+        INSERT INTO subscriptions (
+            user_id, place, unit, month,
+            plan_limit, total_qty, used_qty,
+            threshold_materials_total, materials_sum_total, threshold_met
+        )
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+        RETURNING id, created_at, updated_at
+    `,
+		s.UserID, s.Place, s.Unit, s.Month,
+		s.PlanLimit, s.TotalQty, s.UsedQty,
+		s.ThresholdMaterialsTotal, s.MaterialsSumTotal, s.ThresholdMet,
 	)
 
-	var s Subscription
-	if err := row.Scan(
-		&s.ID,
-		&s.UserID,
-		&s.Place,
-		&s.Unit,
-		&s.Month,
-		&s.PlanLimit,
-		&s.TotalQty,
-		&s.UsedQty,
-		&s.ThresholdMaterialsTotal,
-		&s.MaterialsSumTotal,
-		&s.ThresholdMet,
-		&s.CreatedAt,
-		&s.UpdatedAt,
-	); err != nil {
+	if err := row.Scan(&s.ID, &s.CreatedAt, &s.UpdatedAt); err != nil {
 		return nil, err
 	}
-	return &s, nil
+	return s, nil
 }

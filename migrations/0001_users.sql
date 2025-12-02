@@ -237,8 +237,7 @@ CREATE TABLE IF NOT EXISTS subscriptions (
                                              materials_sum_total       NUMERIC(14,2) NOT NULL DEFAULT 0, -- фактически набранная сумма за материалы
                                              threshold_met             BOOLEAN       NOT NULL DEFAULT FALSE, -- условие выполнено/нет
                                              created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                                             updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                                             CONSTRAINT uq_subs UNIQUE (user_id, place, unit, month, plan_limit)
+                                             updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE INDEX IF NOT EXISTS idx_subs_user_month ON subscriptions (user_id, month);
