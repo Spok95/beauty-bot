@@ -1507,6 +1507,77 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 		_ = b.answerCallback(cb, "Отклонено", false)
 		return
 
+	case strings.HasPrefix(data, "subrq:approve:"):
+		if fromChat != b.adminChat {
+			_ = b.answerCallback(cb, "Недостаточно прав", true)
+			return
+		}
+		rest := strings.TrimPrefix(data, "subrq:approve:")
+		parts := strings.Split(rest, ":")
+		// tgID : place : unit : qty : thresholdTotal
+		if len(parts) != 5 {
+			_ = b.answerCallback(cb, "Некорректные данные", true)
+			return
+		}
+
+		tgID, err1 := strconv.ParseInt(parts[0], 10, 64)
+		place := parts[1]
+		unit := parts[2]
+		qty, err2 := strconv.Atoi(parts[3])
+		thresholdTotal, err3 := strconv.ParseFloat(parts[4], 64)
+		if err1 != nil || err2 != nil || err3 != nil {
+			_ = b.answerCallback(cb, "Некорректные параметры", true)
+			return
+		}
+
+		u, err := b.users.GetByTelegramID(ctx, tgID)
+		if err != nil || u == nil {
+			_ = b.answerCallback(cb, "Мастер не найден", true)
+			return
+		}
+
+		month := time.Now().Format("2006-01")
+		if _, err := b.subs.AddOrCreateTotal(ctx, u.ID, place, unit, month, qty, thresholdTotal); err != nil {
+			_ = b.answerCallback(cb, "Ошибка при оформлении", true)
+			return
+		}
+
+		// мастеру — что абонемент оформлен
+		b.send(tgbotapi.NewMessage(
+			tgID,
+			"Абонемент оформлен/пополнен, посмотреть свои абонементы вы можете, нажав кнопку «Мои абонементы».",
+		))
+
+		// админу — пометка в заявке
+		newText := cb.Message.Text + "\n\n✅ Приобретение абонемента подтверждено."
+		b.editTextAndClear(fromChat, cb.Message.MessageID, newText)
+		_ = b.answerCallback(cb, "Подтверждено", false)
+		return
+
+	case strings.HasPrefix(data, "subrq:reject:"):
+		if fromChat != b.adminChat {
+			_ = b.answerCallback(cb, "Недостаточно прав", true)
+			return
+		}
+		rest := strings.TrimPrefix(data, "subrq:reject:")
+		tgID, err := strconv.ParseInt(rest, 10, 64)
+		if err != nil {
+			_ = b.answerCallback(cb, "Некорректные данные", true)
+			return
+		}
+
+		// мастеру — отказ
+		b.send(tgbotapi.NewMessage(
+			tgID,
+			"Приобретение абонемента было отклонено, возможно не прошла ваша оплата, свяжитесь с администрацией для уточнения причины.",
+		))
+
+		// админу — пометка в заявке
+		newText := cb.Message.Text + "\n\n⛔ Приобретение абонемента отклонено."
+		b.editTextAndClear(fromChat, cb.Message.MessageID, newText)
+		_ = b.answerCallback(cb, "Отклонено", false)
+		return
+
 	/* ===== Админ-меню: склады/категории ===== */
 
 	case data == "adm:wh:add":
@@ -2464,7 +2535,7 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 		}
 
 		// 3) расчёт по ступеням для всех частей
-		rent, rounded, needTotal, partResults, err := b.cons.ComputeRentSplit(ctx, place, unit, mats, parts)
+		calcRent, rounded, needTotal, partResults, err := b.cons.ComputeRentSplit(ctx, place, unit, mats, parts)
 		if err != nil || len(partResults) == 0 {
 			b.send(tgbotapi.NewMessage(fromChat,
 				fmt.Sprintf("⚠️ Нет активных тарифов для: %s / %s (%s). Настройте тарифы.",
@@ -2474,14 +2545,24 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 				)))
 			return
 		}
-		total := rent + mats
+		// аренда к оплате: берем только части БЕЗ абонемента
+		rentToPay := 0.0
+		for i, pr := range partResults {
+			if !metas[i].WithSub {
+				rentToPay += pr.Rent
+			}
+		}
+		total := mats + rentToPay
 
 		// 4) сохраняем в payload
 		st.Payload["with_sub"] = withSub
 		st.Payload["mats_sum"] = mats
 		st.Payload["mats_rounded"] = rounded
 		st.Payload["need_total"] = needTotal
-		st.Payload["rent"] = rent
+
+		// при желании можно хранить оба значения
+		st.Payload["rent_calc"] = calcRent // «номинальная» аренда, необязательно использовать
+		st.Payload["rent"] = rentToPay     // аренда именно к оплате
 		st.Payload["total"] = total
 
 		// детальная разбивка (для прозрачности и на будущее, плюс для confirm)
@@ -2539,22 +2620,42 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 				noSubQty += m.Qty
 			}
 
-			cond := "условие по материалам не выполнено"
-			if pr.ThresholdMet {
-				cond = "условие по материалам выполнено"
-			}
+			// аренда по этой части К ОПЛАТЕ
+			lineRent := pr.Rent
+			cond := ""
 
-			lines = append(lines,
-				fmt.Sprintf(
-					"• %d %s %s: %.2f ₽ (%.2f ₽ за единицу, %s; порог %.0f ₽, в зачёт пошло %.0f ₽)",
-					m.Qty, unitRU[unit], label,
-					pr.Rent, price, cond, pr.Need, pr.MaterialsUsed,
-				),
-			)
+			if m.WithSub {
+				// аренда оплачена заранее абонементом
+				lineRent = 0
+				cond = "оплачено абонементом"
+
+				// без указания цены за единицу
+				lines = append(lines,
+					fmt.Sprintf(
+						"• %d %s %s: %.2f ₽ (%s; порог %.0f ₽, в зачёт пошло %.0f ₽)",
+						m.Qty, unitRU[unit], label,
+						lineRent, cond, pr.Need, pr.MaterialsUsed,
+					),
+				)
+			} else {
+				// обычная аренда без абонемента, тут всё как раньше
+				cond = map[bool]string{
+					true:  "условие по материалам выполнено",
+					false: "условие по материалам не выполнено",
+				}[pr.ThresholdMet]
+
+				lines = append(lines,
+					fmt.Sprintf(
+						"• %d %s %s: %.2f ₽ (%.2f ₽ за единицу, %s; порог %.0f ₽, в зачёт пошло %.0f ₽)",
+						m.Qty, unitRU[unit], label,
+						lineRent, price, cond, pr.Need, pr.MaterialsUsed,
+					),
+				)
+			}
 		}
 
 		lines = append(lines, "")
-		lines = append(lines, fmt.Sprintf("Аренда всего: %.2f ₽", rent))
+		lines = append(lines, fmt.Sprintf("Аренда всего: %.2f ₽", rentToPay))
 		lines = append(lines, fmt.Sprintf("Итого к оплате: %.2f ₽", total))
 
 		// предупреждение, если часть часов ушла без абонемента
@@ -2712,6 +2813,60 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 			}
 		}
 
+		// Добавляем сумму материалов к абонементам
+		if partsRaw, ok := st.Payload["rent_parts"]; ok && partsRaw != nil && b.subs != nil && mats > 0 {
+			if parts, ok := partsRaw.([]any); ok {
+				// Считаем общий объём часов/дней по частям с абонементом
+				totalSubQty := 0
+				for _, pr := range parts {
+					mp, ok := pr.(map[string]any)
+					if !ok {
+						continue
+					}
+					withSub, _ := mp["with_sub"].(bool)
+					if !withSub {
+						continue
+					}
+					qtyF, okQty := mp["qty"].(float64)
+					if !okQty {
+						continue
+					}
+					totalSubQty += int(qtyF)
+				}
+
+				if totalSubQty > 0 {
+					for _, pr := range parts {
+						mp, ok := pr.(map[string]any)
+						if !ok {
+							continue
+						}
+
+						withSub, _ := mp["with_sub"].(bool)
+						if !withSub {
+							continue
+						}
+
+						subIDF, okID := mp["sub_id"].(float64)
+						qtyF, okQty := mp["qty"].(float64)
+						if !okID || !okQty {
+							continue
+						}
+						partQty := int(qtyF)
+						if partQty <= 0 {
+							continue
+						}
+
+						subID := int64(subIDF)
+						// Фактическая сумма материалов, приходящаяся на этот абонемент
+						matsForSub := mats * float64(partQty) / float64(totalSubQty)
+
+						// Ошибку можно залогировать, но не валить весь консумпшен
+						_ = b.subs.AddMaterialsUsage(ctx, subID, matsForSub)
+					}
+				}
+			}
+		}
+
 		pairs := make([][2]int64, 0, len(items))
 		// позиции + списание
 		for _, it := range items {
@@ -2855,6 +3010,46 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 			unit = "day"
 		}
 
+		// Текущий мастер
+		u, _ := b.users.GetByTelegramID(ctx, cb.From.ID)
+		if u == nil || u.Status != users.StatusApproved || u.Role != users.RoleMaster {
+			b.editTextAndClear(fromChat, cb.Message.MessageID, "Доступ запрещён.")
+			_ = b.answerCallback(cb, "Ошибка", true)
+			return
+		}
+
+		// Проверяем, есть ли активный абонемент по этому помещению в текущем месяце
+		month := time.Now().Format("2006-01")
+		subs, err := b.subs.ListByUserMonth(ctx, u.ID, month)
+		if err != nil {
+			b.editTextAndClear(fromChat, cb.Message.MessageID, "Ошибка загрузки абонементов.")
+			_ = b.answerCallback(cb, "Ошибка", true)
+			return
+		}
+
+		for _, s := range subs {
+			if s.Place == place && s.Unit == unit {
+				left := s.TotalQty - s.UsedQty
+				if left > 0 {
+					if left < 0 {
+						left = 0
+					}
+					unitRU := map[string]string{"hour": "ч", "day": "дн"}[unit]
+					placeName := map[string]string{"hall": "общего зала", "cabinet": "кабинета"}[place]
+
+					b.editTextAndClear(fromChat, cb.Message.MessageID,
+						fmt.Sprintf(
+							"У вас уже есть действующий абонемент для %s на текущий месяц: %d/%d (остаток %d %s).\n"+
+								"Новый абонемент можно купить только после полного использования текущего.",
+							placeName, s.UsedQty, s.TotalQty, left, unitRU,
+						),
+					)
+					_ = b.answerCallback(cb, "Абонемент ещё активен", true)
+					return
+				}
+			}
+		}
+
 		// Тарифы-абонементы для выбранного помещения: одна строка = один конкретный объём
 		rates, err := b.cons.ListRates(ctx, place, unit, true)
 		if err != nil {
@@ -2951,20 +3146,60 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 
 		// Объём абонемента = min_qty (min_qty == max_qty по нашей модели)
 		qty := rate.MinQty
+
+		// Текущий мастер
+		u, _ := b.users.GetByTelegramID(ctx, cb.From.ID)
+		if u == nil || u.Status != users.StatusApproved || u.Role != users.RoleMaster {
+			b.editTextAndClear(fromChat, cb.Message.MessageID, "Доступ запрещён.")
+			_ = b.answerCallback(cb, "Ошибка", true)
+			return
+		}
+
+		// Ищем последний абонемент по этому помещению и единице
+		lastSub, err := b.subs.LastByUserPlaceUnit(ctx, u.ID, place, unit)
+		if err != nil {
+			b.editTextAndClear(fromChat, cb.Message.MessageID, "Ошибка загрузки абонементов.")
+			_ = b.answerCallback(cb, "Ошибка", true)
+			return
+		}
+
+		// Порог и стоимость для нового абонемента
+		thresholdPerUnit := rate.Threshold                // 100 / 1000 и т.п.
+		thresholdTotal := float64(qty) * thresholdPerUnit // общий порог по абонементу
+		var pricePerUnit float64                          // цена аренды за час/день
+		if lastSub == nil || lastSub.ThresholdMet {       // абонемента не было или условие выполнено
+			pricePerUnit = rate.PriceWith
+		} else { // прошлый абонемент не выполнил порог
+			pricePerUnit = rate.PriceOwn
+		}
+		totalCost := float64(qty) * pricePerUnit
+
+		// Сохраняем всё нужное в состоянии (используем позже в confirm + заявка админу)
 		st.Payload["qty"] = float64(qty)
+		st.Payload["threshold_per_unit"] = thresholdPerUnit
+		st.Payload["threshold_total"] = thresholdTotal
+		st.Payload["price_per_unit"] = pricePerUnit
+		st.Payload["total_cost"] = totalCost
 		_ = b.states.Set(ctx, fromChat, dialog.StateSubBuyConfirm, st.Payload)
 
 		unitFull := map[string]string{"hour": "часов", "day": "дней"}[unit]
 		unitShort := map[string]string{"hour": "ч", "day": "дн"}[unit]
 
+		placeName := map[string]string{"hall": "Общий зал", "cabinet": "Кабинет"}[place]
+
 		txt := fmt.Sprintf(
-			"Абонемент:\nПомещение: %s\nЛимит: %d %s в месяц\nПорог материалов: %.0f ₽ на %s\nЦена при выполнении порога: %.2f ₽ за %s\nЦена без выполнения порога: %.2f ₽ за %s\n\nОформить этот абонемент?",
-			map[string]string{"hall": "Общий зал", "cabinet": "Кабинет"}[place],
+			"Абонемент:\n"+
+				"Помещение: %s\n"+
+				"Лимит: %d %s в месяц\n"+
+				"Порог материалов: %.2f ₽ по %.2f ₽ за %s\n"+
+				"Цена аренды за %s: %.2f ₽\n"+
+				"Стоимость абонемента: %.2f ₽\n\n"+
+				"Желаете оплатить и приобрести этот абонемент?",
+			placeName,
 			qty, unitFull,
-			rate.Threshold,
-			unitShort,
-			rate.PriceWith, unitShort,
-			rate.PriceOwn, unitShort,
+			thresholdTotal, thresholdPerUnit, unitShort,
+			unitShort, pricePerUnit,
+			totalCost,
 		)
 
 		kb := tgbotapi.NewInlineKeyboardMarkup(
@@ -2978,7 +3213,7 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 		_ = b.answerCallback(cb, "Ок", false)
 		return
 
-		// Покупка абонемента — подтверждение
+		// Покупка абонемента — подтверждение (мастер → заявка админу)
 	case data == "subbuy:confirm":
 		st, _ := b.states.Get(ctx, fromChat)
 		u, _ := b.users.GetByTelegramID(ctx, cb.From.ID)
@@ -2987,19 +3222,78 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 			_ = b.answerCallback(cb, "Ошибка", true)
 			return
 		}
-		place := st.Payload["place"].(string)
-		unit := st.Payload["unit"].(string)
-		qty := int(st.Payload["qty"].(float64))
-		month := time.Now().Format("2006-01")
-
-		if _, err := b.subs.AddOrCreateTotal(ctx, u.ID, place, unit, month, qty); err != nil {
-			b.editTextAndClear(fromChat, cb.Message.MessageID, "Не удалось оформить абонемент.")
+		if st == nil || st.Payload == nil {
+			b.editTextAndClear(fromChat, cb.Message.MessageID, "Состояние утеряно. Начните оформление заново.")
 			_ = b.answerCallback(cb, "Ошибка", true)
 			return
 		}
-		b.editTextAndClear(fromChat, cb.Message.MessageID, "Абонемент оформлен/пополнен.")
+
+		place, _ := st.Payload["place"].(string)
+		unit, _ := st.Payload["unit"].(string)
+		qty := int(st.Payload["qty"].(float64))
+
+		thresholdTotal := 0.0
+		if v, ok := st.Payload["threshold_total"].(float64); ok {
+			thresholdTotal = v
+		} else if thrPerUnit, ok2 := st.Payload["threshold_per_unit"].(float64); ok2 {
+			thresholdTotal = float64(qty) * thrPerUnit
+		}
+
+		pricePerUnit := 0.0
+		if v, ok := st.Payload["price_per_unit"].(float64); ok {
+			pricePerUnit = v
+		}
+		totalCost := 0.0
+		if v, ok := st.Payload["total_cost"].(float64); ok {
+			totalCost = v
+		} else if pricePerUnit > 0 {
+			totalCost = float64(qty) * pricePerUnit
+		}
+
+		// Сообщение мастеру
+		b.editTextAndClear(fromChat, cb.Message.MessageID,
+			"Запрос на приобретение абонемента отправлен администратору. Ожидайте подтверждения.")
 		_ = b.states.Set(ctx, fromChat, dialog.StateIdle, dialog.Payload{})
-		_ = b.answerCallback(cb, "Готово", false)
+
+		// Текст для админа
+		displayName := strings.TrimSpace(u.Username)
+		if displayName == "" {
+			displayName = fmt.Sprintf("id %d", u.ID)
+		}
+
+		placeRU := map[string]string{"hall": "Общий зал", "cabinet": "Кабинет"}
+		unitRU := map[string]string{"hour": "ч", "day": "дн"}
+
+		txt := fmt.Sprintf(
+			"Мастер: %s хочет приобрести абонемент:\n\n"+
+				"Помещение: %s\n"+
+				"Количество: %d %s\n"+
+				"Цена аренды за %s: %.2f ₽\n"+
+				"На сумму: %.2f ₽\n\n"+
+				"Проверьте оплату мастером и подтвердите или отклоните приобретение.",
+			displayName,
+			placeRU[place],
+			qty, unitRU[unit],
+			unitRU[unit], pricePerUnit,
+			totalCost,
+		)
+
+		// коллбеки для админа
+		cbApprove := fmt.Sprintf("subrq:approve:%d:%s:%s:%d:%.2f",
+			cb.From.ID, place, unit, qty, thresholdTotal,
+		)
+		cbReject := fmt.Sprintf("subrq:reject:%d", cb.From.ID)
+
+		msg := tgbotapi.NewMessage(b.adminChat, txt)
+		msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("Подтвердить", cbApprove),
+				tgbotapi.NewInlineKeyboardButtonData("Отклонить", cbReject),
+			),
+		)
+		b.send(msg)
+
+		_ = b.answerCallback(cb, "Отправлено админу", false)
 		return
 
 	// Переключение place/unit
