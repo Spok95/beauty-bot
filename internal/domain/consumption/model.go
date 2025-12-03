@@ -85,6 +85,7 @@ type MasterMaterialsReportRow struct {
 	Qty       int    // количество часов/дней в сессии
 	Comment   string // комментарий из инвойса (дата/примечание сессии)
 
+	BrandName    string // название бренда материала
 	MaterialName string
 	MaterialUnit string
 	MaterialQty  float64

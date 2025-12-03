@@ -434,9 +434,10 @@ SELECT
     s.unit,
     s.qty,
     COALESCE(inv.comment, '') AS comment,
-    m.name     AS material_name,
-    m.unit     AS material_unit,
-    i.qty      AS material_qty,
+    COALESCE(b.name, '')      AS brand_name,
+    m.name                    AS material_name,
+    m.unit                    AS material_unit,
+    i.qty                     AS material_qty,
     i.unit_price,
     i.cost
 FROM consumption_sessions AS s
@@ -444,6 +445,7 @@ JOIN users             AS u   ON u.id = s.user_id
 LEFT JOIN invoices     AS inv ON inv.session_id = s.id
 JOIN consumption_items AS i   ON i.session_id = s.id
 JOIN materials         AS m   ON m.id = i.material_id
+JOIN material_brands   AS b   ON b.id = m.brand_id
 WHERE
     s.created_at >= $1
     AND s.created_at <  $2
@@ -474,6 +476,7 @@ ORDER BY
 			&row.Unit,
 			&row.Qty,
 			&row.Comment,
+			&row.BrandName,
 			&row.MaterialName,
 			&row.MaterialUnit,
 			&row.MaterialQty,

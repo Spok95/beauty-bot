@@ -616,7 +616,7 @@ func (b *Bot) handleAdmRentMaterialsReport(
 		if err := f.SetCellValue(sheetName, "A1", header); err != nil {
 			return err
 		}
-		if err := f.MergeCell(sheetName, "A1", "F1"); err != nil {
+		if err := f.MergeCell(sheetName, "A1", "H1"); err != nil {
 			return err
 		}
 		rowIdx += 2
@@ -657,11 +657,12 @@ func (b *Bot) handleAdmRentMaterialsReport(
 		// Таблица с материалами
 		_ = f.SetCellValue(sheetName, fmt.Sprintf("A%d", rowIdx), "Дата")
 		_ = f.SetCellValue(sheetName, fmt.Sprintf("B%d", rowIdx), "Комментарий")
-		_ = f.SetCellValue(sheetName, fmt.Sprintf("C%d", rowIdx), "Материал")
-		_ = f.SetCellValue(sheetName, fmt.Sprintf("D%d", rowIdx), "Ед.")
-		_ = f.SetCellValue(sheetName, fmt.Sprintf("E%d", rowIdx), "Кол-во")
-		_ = f.SetCellValue(sheetName, fmt.Sprintf("F%d", rowIdx), "Цена за ед.")
-		_ = f.SetCellValue(sheetName, fmt.Sprintf("G%d", rowIdx), "Сумма")
+		_ = f.SetCellValue(sheetName, fmt.Sprintf("C%d", rowIdx), "Бренд")
+		_ = f.SetCellValue(sheetName, fmt.Sprintf("D%d", rowIdx), "Материал")
+		_ = f.SetCellValue(sheetName, fmt.Sprintf("E%d", rowIdx), "Ед.")
+		_ = f.SetCellValue(sheetName, fmt.Sprintf("F%d", rowIdx), "Кол-во")
+		_ = f.SetCellValue(sheetName, fmt.Sprintf("G%d", rowIdx), "Цена за ед.")
+		_ = f.SetCellValue(sheetName, fmt.Sprintf("H%d", rowIdx), "Сумма")
 		rowIdx++
 
 		for _, r := range md.Rows {
@@ -669,11 +670,12 @@ func (b *Bot) handleAdmRentMaterialsReport(
 
 			_ = f.SetCellValue(sheetName, fmt.Sprintf("A%d", rowIdx), dateStr)
 			_ = f.SetCellValue(sheetName, fmt.Sprintf("B%d", rowIdx), r.Comment)
-			_ = f.SetCellValue(sheetName, fmt.Sprintf("C%d", rowIdx), r.MaterialName)
-			_ = f.SetCellValue(sheetName, fmt.Sprintf("D%d", rowIdx), r.MaterialUnit)
-			_ = f.SetCellValue(sheetName, fmt.Sprintf("E%d", rowIdx), r.MaterialQty)
-			_ = f.SetCellValue(sheetName, fmt.Sprintf("F%d", rowIdx), r.UnitPrice)
-			_ = f.SetCellValue(sheetName, fmt.Sprintf("G%d", rowIdx), r.Cost)
+			_ = f.SetCellValue(sheetName, fmt.Sprintf("C%d", rowIdx), r.BrandName)
+			_ = f.SetCellValue(sheetName, fmt.Sprintf("D%d", rowIdx), r.MaterialName)
+			_ = f.SetCellValue(sheetName, fmt.Sprintf("E%d", rowIdx), r.MaterialUnit)
+			_ = f.SetCellValue(sheetName, fmt.Sprintf("F%d", rowIdx), r.MaterialQty)
+			_ = f.SetCellValue(sheetName, fmt.Sprintf("G%d", rowIdx), r.UnitPrice)
+			_ = f.SetCellValue(sheetName, fmt.Sprintf("H%d", rowIdx), r.Cost)
 			rowIdx++
 		}
 	}
