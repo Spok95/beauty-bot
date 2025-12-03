@@ -2327,10 +2327,19 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 		if place == "cabinet" {
 			unit = "day"
 		}
+
 		st, _ := b.states.Get(ctx, fromChat)
+
 		withSub := false
-		if v, ok := st.Payload["with_sub"].(bool); ok {
-			withSub = v
+		comment := ""
+
+		if st != nil && st.Payload != nil {
+			if v, ok := st.Payload["with_sub"].(bool); ok {
+				withSub = v
+			}
+			if c, ok := st.Payload["comment"].(string); ok {
+				comment = c
+			}
 		}
 
 		payload := dialog.Payload{
@@ -2338,14 +2347,13 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 			"unit":     unit,
 			"with_sub": withSub,
 		}
-		if st != nil && st.Payload != nil {
-			if c, ok := st.Payload["comment"].(string); ok {
-				payload["comment"] = c
-			}
+		if comment != "" {
+			payload["comment"] = comment
 		}
 
 		_ = b.states.Set(ctx, fromChat, dialog.StateConsQty, payload)
-		b.editTextWithNav(fromChat, cb.Message.MessageID, fmt.Sprintf("Введите количество (%s):", map[string]string{"hour": "часы", "day": "дни"}[unit]))
+		b.editTextWithNav(fromChat, cb.Message.MessageID,
+			fmt.Sprintf("Введите количество (%s):", map[string]string{"hour": "часы", "day": "дни"}[unit]))
 		_ = b.answerCallback(cb, "Ок", false)
 		return
 
