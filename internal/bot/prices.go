@@ -656,22 +656,24 @@ func (b *Bot) handleAdmRentMaterialsReport(
 
 		// Таблица с материалами
 		_ = f.SetCellValue(sheetName, fmt.Sprintf("A%d", rowIdx), "Дата")
-		_ = f.SetCellValue(sheetName, fmt.Sprintf("B%d", rowIdx), "Материал")
-		_ = f.SetCellValue(sheetName, fmt.Sprintf("C%d", rowIdx), "Ед.")
-		_ = f.SetCellValue(sheetName, fmt.Sprintf("D%d", rowIdx), "Кол-во")
-		_ = f.SetCellValue(sheetName, fmt.Sprintf("E%d", rowIdx), "Цена за ед.")
-		_ = f.SetCellValue(sheetName, fmt.Sprintf("F%d", rowIdx), "Сумма")
+		_ = f.SetCellValue(sheetName, fmt.Sprintf("B%d", rowIdx), "Комментарий")
+		_ = f.SetCellValue(sheetName, fmt.Sprintf("C%d", rowIdx), "Материал")
+		_ = f.SetCellValue(sheetName, fmt.Sprintf("D%d", rowIdx), "Ед.")
+		_ = f.SetCellValue(sheetName, fmt.Sprintf("E%d", rowIdx), "Кол-во")
+		_ = f.SetCellValue(sheetName, fmt.Sprintf("F%d", rowIdx), "Цена за ед.")
+		_ = f.SetCellValue(sheetName, fmt.Sprintf("G%d", rowIdx), "Сумма")
 		rowIdx++
 
 		for _, r := range md.Rows {
 			dateStr := r.CreatedAt.Format("02.01.2006 15:04")
 
 			_ = f.SetCellValue(sheetName, fmt.Sprintf("A%d", rowIdx), dateStr)
-			_ = f.SetCellValue(sheetName, fmt.Sprintf("B%d", rowIdx), r.MaterialName)
-			_ = f.SetCellValue(sheetName, fmt.Sprintf("C%d", rowIdx), r.MaterialUnit)
-			_ = f.SetCellValue(sheetName, fmt.Sprintf("D%d", rowIdx), r.MaterialQty)
-			_ = f.SetCellValue(sheetName, fmt.Sprintf("E%d", rowIdx), r.UnitPrice)
-			_ = f.SetCellValue(sheetName, fmt.Sprintf("F%d", rowIdx), r.Cost)
+			_ = f.SetCellValue(sheetName, fmt.Sprintf("B%d", rowIdx), r.Comment)
+			_ = f.SetCellValue(sheetName, fmt.Sprintf("C%d", rowIdx), r.MaterialName)
+			_ = f.SetCellValue(sheetName, fmt.Sprintf("D%d", rowIdx), r.MaterialUnit)
+			_ = f.SetCellValue(sheetName, fmt.Sprintf("E%d", rowIdx), r.MaterialQty)
+			_ = f.SetCellValue(sheetName, fmt.Sprintf("F%d", rowIdx), r.UnitPrice)
+			_ = f.SetCellValue(sheetName, fmt.Sprintf("G%d", rowIdx), r.Cost)
 			rowIdx++
 		}
 	}

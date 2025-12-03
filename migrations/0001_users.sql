@@ -221,6 +221,7 @@ CREATE TABLE IF NOT EXISTS invoices (
                                         currency TEXT NOT NULL DEFAULT 'RUB',
                                         status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','paid','canceled')),
                                         payment_link TEXT NOT NULL DEFAULT '',
+                                        comment TEXT NOT NULL DEFAULT '',
                                         created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 

@@ -39,12 +39,12 @@ func (r *Repo) AddItem(ctx context.Context, sessionID, materialID int64, qty, un
 	return err
 }
 
-func (r *Repo) CreateInvoice(ctx context.Context, userID, sessionID int64, amount float64) (int64, error) {
+func (r *Repo) CreateInvoice(ctx context.Context, userID, sessionID int64, amount float64, comment string) (int64, error) {
 	row := r.pool.QueryRow(ctx, `
-		INSERT INTO invoices (user_id, session_id, amount, status)
-		VALUES ($1,$2,$3,'pending')
+		INSERT INTO invoices (user_id, session_id, amount, status, comment)
+		VALUES ($1,$2,$3,'pending',$4)
 		RETURNING id
-	`, userID, sessionID, amount)
+	`, userID, sessionID, amount, comment)
 	var id int64
 	return id, row.Scan(&id)
 }
@@ -433,15 +433,17 @@ SELECT
     s.place,
     s.unit,
     s.qty,
+    COALESCE(inv.comment, '') AS comment,
     m.name     AS material_name,
     m.unit     AS material_unit,
     i.qty      AS material_qty,
     i.unit_price,
     i.cost
 FROM consumption_sessions AS s
-JOIN users             AS u ON u.id = s.user_id
-JOIN consumption_items AS i ON i.session_id = s.id
-JOIN materials         AS m ON m.id = i.material_id
+JOIN users             AS u   ON u.id = s.user_id
+LEFT JOIN invoices     AS inv ON inv.session_id = s.id
+JOIN consumption_items AS i   ON i.session_id = s.id
+JOIN materials         AS m   ON m.id = i.material_id
 WHERE
     s.created_at >= $1
     AND s.created_at <  $2
@@ -471,6 +473,7 @@ ORDER BY
 			&row.Place,
 			&row.Unit,
 			&row.Qty,
+			&row.Comment,
 			&row.MaterialName,
 			&row.MaterialUnit,
 			&row.MaterialQty,

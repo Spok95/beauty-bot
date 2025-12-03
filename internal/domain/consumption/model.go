@@ -83,6 +83,7 @@ type MasterMaterialsReportRow struct {
 	Place     string // hall|cabinet
 	Unit      string // hour|day
 	Qty       int    // количество часов/дней в сессии
+	Comment   string // комментарий из инвойса (дата/примечание сессии)
 
 	MaterialName string
 	MaterialUnit string
