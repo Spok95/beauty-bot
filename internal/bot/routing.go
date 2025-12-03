@@ -101,15 +101,16 @@ func (b *Bot) handleCommand(ctx context.Context, msg *tgbotapi.Message) {
 			b.send(tgbotapi.NewMessage(chatID, "Доступ запрещён."))
 			return
 		}
-		_ = b.states.Set(ctx, chatID, dialog.StateConsPlace, dialog.Payload{})
+		_ = b.states.Set(ctx, chatID, dialog.StateConsComment, dialog.Payload{})
+
 		kb := tgbotapi.NewInlineKeyboardMarkup(
 			tgbotapi.NewInlineKeyboardRow(
-				tgbotapi.NewInlineKeyboardButtonData("Общий зал", "cons:place:hall"),
-				tgbotapi.NewInlineKeyboardButtonData("Кабинет", "cons:place:cabinet"),
+				tgbotapi.NewInlineKeyboardButtonData("Пропустить", "cons:comment_skip"),
 			),
 			navKeyboard(false, true).InlineKeyboard[0],
 		)
-		m := tgbotapi.NewMessage(chatID, "Выберите помещение:")
+		m := tgbotapi.NewMessage(chatID,
+			"Введите дату за которую подаете данные или если дата совпадает, то нажмите «Пропустить».")
 		m.ReplyMarkup = kb
 		b.send(m)
 		return
@@ -132,15 +133,16 @@ func (b *Bot) handleStateMessage(ctx context.Context, msg *tgbotapi.Message) {
 		if u == nil || u.Status != users.StatusApproved || u.Role != users.RoleMaster {
 			return
 		}
-		_ = b.states.Set(ctx, chatID, dialog.StateConsPlace, dialog.Payload{})
+		_ = b.states.Set(ctx, chatID, dialog.StateConsComment, dialog.Payload{})
+
 		kb := tgbotapi.NewInlineKeyboardMarkup(
 			tgbotapi.NewInlineKeyboardRow(
-				tgbotapi.NewInlineKeyboardButtonData("Общий зал", "cons:place:hall"),
-				tgbotapi.NewInlineKeyboardButtonData("Кабинет", "cons:place:cabinet"),
+				tgbotapi.NewInlineKeyboardButtonData("Пропустить", "cons:comment_skip"),
 			),
 			navKeyboard(false, true).InlineKeyboard[0],
 		)
-		m := tgbotapi.NewMessage(chatID, "Выберите помещение:")
+		m := tgbotapi.NewMessage(chatID,
+			"Введите дату за которую подаете данные или если дата совпадает, то нажмите «Пропустить».")
 		m.ReplyMarkup = kb
 		b.send(m)
 		return
@@ -806,6 +808,29 @@ func (b *Bot) handleStateMessage(ctx context.Context, msg *tgbotapi.Message) {
 		}
 
 		b.handlePriceRentImportExcel(ctx, chatID, data)
+		return
+
+	case dialog.StateConsComment:
+		text := strings.TrimSpace(msg.Text)
+		if text == "" {
+			b.send(tgbotapi.NewMessage(chatID,
+				"Комментарий не может быть пустым. Введите дату или нажмите «Пропустить»."))
+			return
+		}
+
+		payload := dialog.Payload{"comment": text}
+		_ = b.states.Set(ctx, chatID, dialog.StateConsPlace, payload)
+
+		kb := tgbotapi.NewInlineKeyboardMarkup(
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("Общий зал", "cons:place:hall"),
+				tgbotapi.NewInlineKeyboardButtonData("Кабинет", "cons:place:cabinet"),
+			),
+			navKeyboard(false, true).InlineKeyboard[0],
+		)
+		m := tgbotapi.NewMessage(chatID, "Выберите помещение:")
+		m.ReplyMarkup = kb
+		b.send(m)
 		return
 
 	case dialog.StateConsQty:
@@ -2276,6 +2301,25 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 		_ = b.answerCallback(cb, "Ок", false)
 		return
 
+		// Расход/Аренда: пропустить ввод комментария
+	case data == "cons:comment_skip":
+		// пустой комментарий, сразу переходим к выбору помещения
+		payload := dialog.Payload{"comment": ""}
+		_ = b.states.Set(ctx, fromChat, dialog.StateConsPlace, payload)
+
+		kb := tgbotapi.NewInlineKeyboardMarkup(
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("Общий зал", "cons:place:hall"),
+				tgbotapi.NewInlineKeyboardButtonData("Кабинет", "cons:place:cabinet"),
+			),
+			navKeyboard(false, true).InlineKeyboard[0],
+		)
+		msg := tgbotapi.NewMessage(fromChat, "Выберите помещение:")
+		msg.ReplyMarkup = kb
+		b.send(msg)
+		_ = b.answerCallback(cb, "Ок", false)
+		return
+
 		// Выбор помещения
 	case strings.HasPrefix(data, "cons:place:"):
 		place := strings.TrimPrefix(data, "cons:place:")
@@ -2283,16 +2327,33 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 		if place == "cabinet" {
 			unit = "day"
 		}
+
 		st, _ := b.states.Get(ctx, fromChat)
+
 		withSub := false
-		if v, ok := st.Payload["with_sub"].(bool); ok {
-			withSub = v
+		comment := ""
+
+		if st != nil && st.Payload != nil {
+			if v, ok := st.Payload["with_sub"].(bool); ok {
+				withSub = v
+			}
+			if c, ok := st.Payload["comment"].(string); ok {
+				comment = c
+			}
 		}
 
-		_ = b.states.Set(ctx, fromChat, dialog.StateConsQty, dialog.Payload{
-			"place": place, "unit": unit, "with_sub": withSub,
-		})
-		b.editTextWithNav(fromChat, cb.Message.MessageID, fmt.Sprintf("Введите количество (%s):", map[string]string{"hour": "часы", "day": "дни"}[unit]))
+		payload := dialog.Payload{
+			"place":    place,
+			"unit":     unit,
+			"with_sub": withSub,
+		}
+		if comment != "" {
+			payload["comment"] = comment
+		}
+
+		_ = b.states.Set(ctx, fromChat, dialog.StateConsQty, payload)
+		b.editTextWithNav(fromChat, cb.Message.MessageID,
+			fmt.Sprintf("Введите количество (%s):", map[string]string{"hour": "часы", "day": "дни"}[unit]))
 		_ = b.answerCallback(cb, "Ок", false)
 		return
 
@@ -2756,6 +2817,11 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 		rent := st.Payload["rent"].(float64)
 		total := st.Payload["total"].(float64)
 
+		var comment string
+		if v, ok := st.Payload["comment"].(string); ok {
+			comment = v
+		}
+
 		// найдём склад Расходники (только с него списываем)
 		whID, err := b.getConsumablesWarehouseID(ctx)
 		if err != nil {
@@ -2770,9 +2836,15 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 		}
 
 		// создаём сессию + позиции
-		sid, err := b.cons.CreateSession(ctx, u.ID, place, unit, qty, withSub, mats, rounded, rent, total, map[string]any{
+		sessionPayload := map[string]any{
 			"items_count": len(items),
-		})
+		}
+		if comment != "" {
+			sessionPayload["comment"] = comment
+		}
+
+		sid, err := b.cons.CreateSession(ctx, u.ID, place, unit, qty, withSub, mats, rounded, rent, total, sessionPayload)
+
 		if err != nil {
 			b.editTextAndClear(fromChat, cb.Message.MessageID, "Не удалось создать сессию")
 			_ = b.answerCallback(cb, "Ошибка", true)
@@ -2886,7 +2958,7 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 		}
 
 		// инвойс (pending)
-		invoiceID, err := b.cons.CreateInvoice(ctx, u.ID, sid, total)
+		invoiceID, err := b.cons.CreateInvoice(ctx, u.ID, sid, total, comment)
 		if err != nil {
 			b.editTextAndClear(fromChat, cb.Message.MessageID, "Не удалось создать счёт.")
 			_ = b.answerCallback(cb, "Ошибка", true)
