@@ -109,6 +109,10 @@ const (
 
 	// Мастер: ввод строки для поиска остатков по названию материала
 	StateMasterStockSearchByName State = "master_stock_search_by_name"
+
+	// Чат с админом и рассылка
+	StateChatAdmin       State = "chat_admin"
+	StateAdmBroadcastAll State = "adm_broadcast_all"
 )
 
 type Payload map[string]any

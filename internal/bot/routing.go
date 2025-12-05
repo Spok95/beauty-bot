@@ -216,6 +216,23 @@ func (b *Bot) handleStateMessage(ctx context.Context, msg *tgbotapi.Message) {
 		return
 	}
 
+	// Чат с админом — доступен мастеру и администратору
+	if msg.Text == "Чат с админом" {
+		u, _ := b.users.GetByTelegramID(ctx, tgID)
+		if u == nil || u.Status != users.StatusApproved {
+			return
+		}
+		if u.Role != users.RoleMaster && u.Role != users.RoleAdmin && u.Role != users.RoleAdministrator {
+			return
+		}
+
+		_ = b.states.Set(ctx, chatID, dialog.StateChatAdmin, dialog.Payload{})
+		m := tgbotapi.NewMessage(chatID,
+			"Отправьте сообщение или файл для админов одним сообщением. Оно будет переслано в админский чат.")
+		b.send(m)
+		return
+	}
+
 	// "Список команд" — доступно всем подтверждённым
 	if msg.Text == "Список команд" {
 		u, _ := b.users.GetByTelegramID(ctx, tgID)
@@ -236,7 +253,8 @@ func (b *Bot) handleStateMessage(ctx context.Context, msg *tgbotapi.Message) {
 	// Кнопки нижней панели для админа
 	if msg.Text == "Склады" || msg.Text == "Категории" || msg.Text == "Материалы" ||
 		msg.Text == "Инвентаризация" || msg.Text == "Поставки" || msg.Text == "Абонементы" ||
-		msg.Text == "Установка цен" || msg.Text == "Аренда и Расходы материалов по мастерам" {
+		msg.Text == "Установка цен" || msg.Text == "Аренда и Расходы материалов по мастерам" ||
+		msg.Text == "Оповещение всем" {
 		u, _ := b.users.GetByTelegramID(ctx, tgID)
 		if u == nil || u.Status != users.StatusApproved {
 			// игнорируем для не-админов
@@ -300,6 +318,14 @@ func (b *Bot) handleStateMessage(ctx context.Context, msg *tgbotapi.Message) {
 					"Например: 01.11.2025-30.11.2025.\n"+
 					"Дата окончания включительно, данные будут взяты до конца этого дня.")
 			b.send(msg)
+			return
+		case "Оповещение всем":
+			if u.Role != users.RoleAdmin {
+				return
+			}
+			_ = b.states.Set(ctx, chatID, dialog.StateAdmBroadcastAll, dialog.Payload{})
+			b.send(tgbotapi.NewMessage(chatID,
+				"Введите текст оповещения. Оно будет отправлено всем подтверждённым пользователям бота."))
 			return
 		}
 		return
@@ -370,6 +396,102 @@ func (b *Bot) handleStateMessage(ctx context.Context, msg *tgbotapi.Message) {
 		m := tgbotapi.NewMessage(chatID, "Выберите роль:")
 		m.ReplyMarkup = roleKeyboard()
 		b.send(m)
+		return
+
+	case dialog.StateChatAdmin:
+		if b.adminChat == 0 {
+			b.send(tgbotapi.NewMessage(chatID,
+				"Админ-чат не настроен. Сообщение не отправлено."))
+			_ = b.states.Reset(ctx, chatID)
+			return
+		}
+
+		u, _ := b.users.GetByTelegramID(ctx, tgID)
+
+		roleLabel := "пользователь"
+		if u != nil {
+			switch u.Role {
+			case users.RoleMaster:
+				roleLabel = "мастер"
+			case users.RoleAdmin, users.RoleAdministrator:
+				roleLabel = "администратор"
+			}
+		}
+
+		fio := ""
+		if u != nil {
+			// здесь хранится ФИО из таблицы users (поле username)
+			fio = strings.TrimSpace(u.Username)
+		}
+
+		header := fmt.Sprintf("Сообщение в чат админов от %s", roleLabel)
+		if fio != "" {
+			header += " " + fio
+		}
+		if msg.From.UserName != "" {
+			header += fmt.Sprintf(" (@%s)", msg.From.UserName)
+		}
+		header += ":"
+
+		// сначала отправляем шапку с ролью и ФИО из БД
+		b.send(tgbotapi.NewMessage(b.adminChat, header))
+
+		// дальше отправляем само содержимое (текст или файл) уже от имени бота
+		switch {
+		case msg.Document != nil:
+			// документ
+			caption := strings.TrimSpace(msg.Caption)
+			doc := tgbotapi.NewDocument(b.adminChat,
+				tgbotapi.FileID(msg.Document.FileID))
+			if caption != "" {
+				doc.Caption = caption
+			}
+			b.send(doc)
+
+		case len(msg.Photo) > 0:
+			// фото (берём самый большой размер)
+			photo := msg.Photo[len(msg.Photo)-1]
+			caption := strings.TrimSpace(msg.Caption)
+			p := tgbotapi.NewPhoto(b.adminChat,
+				tgbotapi.FileID(photo.FileID))
+			if caption != "" {
+				p.Caption = caption
+			}
+			b.send(p)
+
+		case msg.Video != nil:
+			caption := strings.TrimSpace(msg.Caption)
+			v := tgbotapi.NewVideo(b.adminChat,
+				tgbotapi.FileID(msg.Video.FileID))
+			if caption != "" {
+				v.Caption = caption
+			}
+			b.send(v)
+
+		case msg.Audio != nil:
+			caption := strings.TrimSpace(msg.Caption)
+			a := tgbotapi.NewAudio(b.adminChat,
+				tgbotapi.FileID(msg.Audio.FileID))
+			if caption != "" {
+				a.Caption = caption
+			}
+			b.send(a)
+
+		case msg.Voice != nil:
+			v := tgbotapi.NewVoice(b.adminChat,
+				tgbotapi.FileID(msg.Voice.FileID))
+			b.send(v)
+
+		default:
+			// обычный текст
+			text := strings.TrimSpace(msg.Text)
+			if text != "" {
+				b.send(tgbotapi.NewMessage(b.adminChat, text))
+			}
+		}
+
+		b.send(tgbotapi.NewMessage(chatID, "Сообщение отправлено администраторам."))
+		_ = b.states.Reset(ctx, chatID)
 		return
 
 	case dialog.StateAdmWhName:
@@ -1103,6 +1225,42 @@ func (b *Bot) handleStateMessage(ctx context.Context, msg *tgbotapi.Message) {
 		}
 
 		_ = b.states.Set(ctx, chatID, dialog.StateIdle, dialog.Payload{})
+		return
+
+	case dialog.StateAdmBroadcastAll:
+		textToSend := strings.TrimSpace(msg.Text)
+		if textToSend == "" {
+			b.send(tgbotapi.NewMessage(chatID, "Текст оповещения не может быть пустым. Введите сообщение."))
+			return
+		}
+
+		u, _ := b.users.GetByTelegramID(ctx, tgID)
+		if u == nil || u.Status != users.StatusApproved || u.Role != users.RoleAdmin {
+			b.send(tgbotapi.NewMessage(chatID, "Недостаточно прав для рассылки."))
+			_ = b.states.Reset(ctx, chatID)
+			return
+		}
+
+		ids, err := b.users.ListApprovedTelegramIDs(ctx)
+		if err != nil {
+			b.send(tgbotapi.NewMessage(chatID,
+				fmt.Sprintf("Не удалось получить список пользователей: %v", err)))
+			_ = b.states.Reset(ctx, chatID)
+			return
+		}
+
+		sent := 0
+		for _, id := range ids {
+			if id == 0 {
+				continue
+			}
+			b.send(tgbotapi.NewMessage(id, textToSend))
+			sent++
+		}
+
+		b.send(tgbotapi.NewMessage(chatID,
+			fmt.Sprintf("Оповещение отправлено %d пользователям.", sent)))
+		_ = b.states.Reset(ctx, chatID)
 		return
 
 	case dialog.StateMasterStockSearchByName:
