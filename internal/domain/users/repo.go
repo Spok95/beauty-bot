@@ -127,3 +127,25 @@ func (r *Repo) GetByID(ctx context.Context, id int64) (*User, error) {
 	}
 	return &u, nil
 }
+
+func (r *Repo) ListApprovedTelegramIDs(ctx context.Context) ([]int64, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT telegram_id
+		FROM users
+		WHERE status = 'approved'
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var res []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		res = append(res, id)
+	}
+	return res, rows.Err()
+}

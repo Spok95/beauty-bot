@@ -66,6 +66,7 @@ func adminReplyKeyboard() tgbotapi.ReplyKeyboardMarkup {
 			{tgbotapi.NewKeyboardButton("Инвентаризация"), tgbotapi.NewKeyboardButton("Поставки")},
 			{tgbotapi.NewKeyboardButton("Установка цен"), tgbotapi.NewKeyboardButton("Установка тарифов")},
 			{tgbotapi.NewKeyboardButton("Аренда и Расходы материалов по мастерам")},
+			{tgbotapi.NewKeyboardButton("Оповещение всем")},
 		},
 	}
 }
@@ -77,6 +78,7 @@ func masterReplyKeyboard() tgbotapi.ReplyKeyboardMarkup {
 			{tgbotapi.NewKeyboardButton("Расход/Аренда")},
 			{tgbotapi.NewKeyboardButton("Просмотр остатков")},
 			{tgbotapi.NewKeyboardButton("Мои абонементы"), tgbotapi.NewKeyboardButton("Купить абонемент")},
+			{tgbotapi.NewKeyboardButton("Чат с админом")},
 		},
 	}
 }
@@ -87,6 +89,7 @@ func salonAdminReplyKeyboard() tgbotapi.ReplyKeyboardMarkup {
 		Keyboard: [][]tgbotapi.KeyboardButton{
 			{tgbotapi.NewKeyboardButton("Категории"), tgbotapi.NewKeyboardButton("Материалы")},
 			{tgbotapi.NewKeyboardButton("Инвентаризация"), tgbotapi.NewKeyboardButton("Поставки")},
+			{tgbotapi.NewKeyboardButton("Чат с админом")},
 		},
 	}
 }
