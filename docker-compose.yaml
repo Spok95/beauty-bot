@@ -1,13 +1,49 @@
+version: "3.9"
+
 services:
   postgres:
-    image: postgres:17
+    image: postgres:16
+    restart: unless-stopped
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: postgres
-    ports:
-      - "5433:5432"
+      POSTGRES_USER: beauty
+      POSTGRES_PASSWORD: beauty
+      POSTGRES_DB: beauty
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U beauty -d beauty"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - beauty_net
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - .env
+    networks:
+      - beauty_net
+    # если порт 80 на сервере свободен — можно сделать "80:80"
+    ports:
+      - "80:80"
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+        reservations:
+          memory: 64M
+
 volumes:
-  pgdata:
+  postgres_data:
+
+networks:
+  beauty_net:
+    driver: bridge
+

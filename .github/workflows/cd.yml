@@ -1,0 +1,53 @@
+name: Deploy to production
+
+on:
+  push:
+    branches:
+      - main    # если у тебя основная ветка main — поменяй на main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Copy project to server
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ vars.DEPLOY_HOST }}
+          username: ${{ secrets.SSH_DEPLOY_USER }}
+          key: ${{ secrets.SSH_DEPLOY_KEY }}
+          source: .
+          target: /root/beauty-bot
+          overwrite: true
+          rm: true
+
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v0.1.7
+        with:
+          host: ${{ vars.DEPLOY_HOST }}
+          username: ${{ secrets.SSH_DEPLOY_USER }}
+          key: ${{ secrets.SSH_DEPLOY_KEY }}
+          script: |
+            set -e
+            cd /root/beauty-bot
+
+            cat > .env <<EOF
+            TELEGRAM_TOKEN=${{ secrets.TELEGRAM_TOKEN }}
+            TELEGRAM_ADMIN_CHAT_ID=${{ vars.TELEGRAM_ADMIN_CHAT_ID }}
+            TELEGRAM_REQUEST_TIMEOUT_SEC=${{ vars.TELEGRAM_REQUEST_TIMEOUT_SEC }}
+
+            APP_ENV=${{ vars.APP_ENV }}
+
+            POSTGRES_DSN=${{ secrets.POSTGRES_DSN }}
+
+            CONFIG_FILE=config/example.yaml
+            EOF
+
+            chmod 600 .env
+
+            docker-compose pull || true
+            docker-compose up -d --build
+            docker image prune -f
