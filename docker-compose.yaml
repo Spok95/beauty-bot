@@ -1,4 +1,4 @@
-version: "3.9"
+version: "3.7"
 
 services:
   postgres:
@@ -30,15 +30,10 @@ services:
       - .env
     networks:
       - beauty_net
-    # если порт 80 на сервере свободен — можно сделать "80:80"
-    ports:
-      - "80:80"
-    deploy:
-      resources:
-        limits:
-          memory: 256M
-        reservations:
-          memory: 64M
+    # если понадобится веб-интерфейс — можно пробросить порт
+    # сейчас можно вообще закомментировать, боту порт не нужен
+    # ports:
+    #   - "8080:80"
 
 volumes:
   postgres_data:
