@@ -6,5 +6,14 @@ COPY . .
 RUN CGO_ENABLED=0 go build -o /app ./cmd/bot
 
 FROM gcr.io/distroless/base-debian12
-COPY --from=build /app /app
-ENTRYPOINT ["/app"]
+
+WORKDIR /app
+
+# бинарник
+COPY --from=build /app ./bot
+
+# конфигурация и миграции из контекста сборки
+COPY config ./config
+COPY migrations ./migrations
+
+ENTRYPOINT ["/app/bot"]

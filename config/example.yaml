@@ -4,7 +4,7 @@ app:
 
 telegram:
   token: "${TELEGRAM_TOKEN}"
-  admin_chat_id: 439480376,1041899019
+  admin_chat_id: 439480376
   request_timeout_sec: 30
 
 http:
@@ -14,7 +14,7 @@ payments:
   base_url: "https://example.com"
 
 postgres:
-  dsn: "postgres://postgres:postgres@127.0.0.1:5433/postgres?sslmode=disable"
+  dsn: "postgres://beauty:beauty@postgres:5432/beauty?sslmode=disable"
 
 metrics:
   enabled: true
