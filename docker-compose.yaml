@@ -24,8 +24,7 @@ services:
       dockerfile: Dockerfile
     restart: unless-stopped
     depends_on:
-      postgres:
-        condition: service_healthy
+      - postgres
     env_file:
       - .env
     networks:
