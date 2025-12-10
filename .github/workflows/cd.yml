@@ -39,6 +39,7 @@ jobs:
             cat > .env <<EOF
             TELEGRAM_TOKEN=${{ secrets.TELEGRAM_TOKEN }}
             TELEGRAM_ADMIN_CHAT_ID=${{ vars.TELEGRAM_ADMIN_CHAT_ID }}
+            TELEGRAM_ADMIN_IDS=${{ vars.TELEGRAM_ADMIN_IDS }}
             TELEGRAM_REQUEST_TIMEOUT_SEC=${{ vars.TELEGRAM_REQUEST_TIMEOUT_SEC }}
 
             APP_ENV=${{ vars.APP_ENV }}
