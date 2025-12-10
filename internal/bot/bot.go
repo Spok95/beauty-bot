@@ -26,6 +26,7 @@ type Bot struct {
 	users     *users.Repo
 	states    *dialog.Repo
 	adminChat int64
+	adminIDs  map[int64]struct{}
 	catalog   *catalog.Repo
 	materials *materials.Repo
 	brands    *brands.Repo
@@ -37,20 +38,45 @@ type Bot struct {
 
 func New(api *tgbotapi.BotAPI, log *slog.Logger,
 	usersRepo *users.Repo, statesRepo *dialog.Repo,
-	adminChatID int64, catalogRepo *catalog.Repo,
+	adminChatID int64, adminIDs []int64,
+	catalogRepo *catalog.Repo,
 	materialsRepo *materials.Repo, brandsRepo *brands.Repo,
 	inventoryRepo *inventory.Repo,
 	consRepo *consumption.Repo, subsRepo *subsdomain.Repo,
 	paymentsSvc *payments.Service) *Bot {
 
+	adminMap := make(map[int64]struct{}, len(adminIDs))
+	for _, id := range adminIDs {
+		if id == 0 {
+			continue
+		}
+		adminMap[id] = struct{}{}
+	}
+	// совместимость: если список пуст, но adminChatID задан — считаем его единственным админом
+	if len(adminMap) == 0 && adminChatID != 0 {
+		adminMap[adminChatID] = struct{}{}
+	}
+
 	return &Bot{
 		api: api, log: log, users: usersRepo, states: statesRepo,
-		adminChat: adminChatID, catalog: catalogRepo,
+		adminChat: adminChatID, adminIDs: adminMap,
+		catalog:   catalogRepo,
 		materials: materialsRepo, brands: brandsRepo,
 		inventory: inventoryRepo,
 		cons:      consRepo, subs: subsRepo,
 		payments: paymentsSvc,
 	}
+}
+
+func (b *Bot) isAdminID(tgID int64) bool {
+	if b == nil {
+		return false
+	}
+	if len(b.adminIDs) == 0 {
+		return tgID == b.adminChat && b.adminChat != 0
+	}
+	_, ok := b.adminIDs[tgID]
+	return ok
 }
 
 func (b *Bot) Run(ctx context.Context, timeoutSec int) error {

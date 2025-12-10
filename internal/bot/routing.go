@@ -37,7 +37,7 @@ func (b *Bot) handleCommand(ctx context.Context, msg *tgbotapi.Message) {
 			return
 		}
 		// авто-админ
-		if msg.From.ID == b.adminChat && (u.Role != users.RoleAdmin || u.Status != users.StatusApproved) {
+		if b.isAdminID(msg.From.ID) && (u.Role != users.RoleAdmin || u.Status != users.StatusApproved) {
 			if _, err2 := b.users.Approve(ctx, msg.From.ID, users.RoleAdmin); err2 == nil {
 				m := tgbotapi.NewMessage(chatID, "Привет, админ! Для управления ботом, ты можешь воспользоваться меню с кнопками и работать через них.")
 				m.ReplyMarkup = adminReplyKeyboard()
@@ -45,6 +45,7 @@ func (b *Bot) handleCommand(ctx context.Context, msg *tgbotapi.Message) {
 				return
 			}
 		}
+
 		if u.Role == users.RoleAdmin && u.Status == users.StatusApproved {
 			m := tgbotapi.NewMessage(chatID, "Привет, админ! Для управления ботом, ты можешь воспользоваться меню с кнопками и работать через них.")
 			m.ReplyMarkup = adminReplyKeyboard()
@@ -399,7 +400,7 @@ func (b *Bot) handleStateMessage(ctx context.Context, msg *tgbotapi.Message) {
 		return
 
 	case dialog.StateChatAdmin:
-		if b.adminChat == 0 {
+		if len(b.adminIDs) == 0 {
 			b.send(tgbotapi.NewMessage(chatID,
 				"Админ-чат не настроен. Сообщение не отправлено."))
 			_ = b.states.Reset(ctx, chatID)
@@ -420,7 +421,6 @@ func (b *Bot) handleStateMessage(ctx context.Context, msg *tgbotapi.Message) {
 
 		fio := ""
 		if u != nil {
-			// здесь хранится ФИО из таблицы users (поле username)
 			fio = strings.TrimSpace(u.Username)
 		}
 
@@ -433,60 +433,59 @@ func (b *Bot) handleStateMessage(ctx context.Context, msg *tgbotapi.Message) {
 		}
 		header += ":"
 
-		// сначала отправляем шапку с ролью и ФИО из БД
-		b.send(tgbotapi.NewMessage(b.adminChat, header))
+		for adminID := range b.adminIDs {
+			// сначала шапка
+			b.send(tgbotapi.NewMessage(adminID, header))
 
-		// дальше отправляем само содержимое (текст или файл) уже от имени бота
-		switch {
-		case msg.Document != nil:
-			// документ
-			caption := strings.TrimSpace(msg.Caption)
-			doc := tgbotapi.NewDocument(b.adminChat,
-				tgbotapi.FileID(msg.Document.FileID))
-			if caption != "" {
-				doc.Caption = caption
-			}
-			b.send(doc)
+			// дальше отправляем содержимое
+			switch {
+			case msg.Document != nil:
+				caption := strings.TrimSpace(msg.Caption)
+				doc := tgbotapi.NewDocument(adminID,
+					tgbotapi.FileID(msg.Document.FileID))
+				if caption != "" {
+					doc.Caption = caption
+				}
+				b.send(doc)
 
-		case len(msg.Photo) > 0:
-			// фото (берём самый большой размер)
-			photo := msg.Photo[len(msg.Photo)-1]
-			caption := strings.TrimSpace(msg.Caption)
-			p := tgbotapi.NewPhoto(b.adminChat,
-				tgbotapi.FileID(photo.FileID))
-			if caption != "" {
-				p.Caption = caption
-			}
-			b.send(p)
+			case len(msg.Photo) > 0:
+				photo := msg.Photo[len(msg.Photo)-1]
+				caption := strings.TrimSpace(msg.Caption)
+				p := tgbotapi.NewPhoto(adminID,
+					tgbotapi.FileID(photo.FileID))
+				if caption != "" {
+					p.Caption = caption
+				}
+				b.send(p)
 
-		case msg.Video != nil:
-			caption := strings.TrimSpace(msg.Caption)
-			v := tgbotapi.NewVideo(b.adminChat,
-				tgbotapi.FileID(msg.Video.FileID))
-			if caption != "" {
-				v.Caption = caption
-			}
-			b.send(v)
+			case msg.Video != nil:
+				caption := strings.TrimSpace(msg.Caption)
+				v := tgbotapi.NewVideo(adminID,
+					tgbotapi.FileID(msg.Video.FileID))
+				if caption != "" {
+					v.Caption = caption
+				}
+				b.send(v)
 
-		case msg.Audio != nil:
-			caption := strings.TrimSpace(msg.Caption)
-			a := tgbotapi.NewAudio(b.adminChat,
-				tgbotapi.FileID(msg.Audio.FileID))
-			if caption != "" {
-				a.Caption = caption
-			}
-			b.send(a)
+			case msg.Audio != nil:
+				caption := strings.TrimSpace(msg.Caption)
+				a := tgbotapi.NewAudio(adminID,
+					tgbotapi.FileID(msg.Audio.FileID))
+				if caption != "" {
+					a.Caption = caption
+				}
+				b.send(a)
 
-		case msg.Voice != nil:
-			v := tgbotapi.NewVoice(b.adminChat,
-				tgbotapi.FileID(msg.Voice.FileID))
-			b.send(v)
+			case msg.Voice != nil:
+				v := tgbotapi.NewVoice(adminID,
+					tgbotapi.FileID(msg.Voice.FileID))
+				b.send(v)
 
-		default:
-			// обычный текст
-			text := strings.TrimSpace(msg.Text)
-			if text != "" {
-				b.send(tgbotapi.NewMessage(b.adminChat, text))
+			default:
+				text := strings.TrimSpace(msg.Text)
+				if text != "" {
+					b.send(tgbotapi.NewMessage(adminID, text))
+				}
 			}
 		}
 
@@ -1651,7 +1650,7 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 		return
 
 	case strings.HasPrefix(data, "approve:"):
-		if fromChat != b.adminChat {
+		if !b.isAdminID(fromChat) {
 			_ = b.answerCallback(cb, "Недостаточно прав", true)
 			return
 		}
@@ -1673,7 +1672,7 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 		return
 
 	case strings.HasPrefix(data, "reject:"):
-		if fromChat != b.adminChat {
+		if !b.isAdminID(fromChat) {
 			_ = b.answerCallback(cb, "Недостаточно прав", true)
 			return
 		}

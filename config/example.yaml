@@ -5,6 +5,7 @@ app:
 telegram:
   token: "${TELEGRAM_TOKEN}"
   admin_chat_id: 439480376
+  admin_ids: "${TELEGRAM_ADMIN_IDS}"
   request_timeout_sec: 30
 
 http:
