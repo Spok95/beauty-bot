@@ -228,3 +228,12 @@ func (r *Repo) CreateSupplyBatch(
 	`, actorID, warehouseID, comment).Scan(&id)
 	return id, err
 }
+
+func (r *Repo) InitMaterialForWarehouse(ctx context.Context, warehouseID, materialID int64) error {
+	_, err := r.pool.Exec(ctx, `
+        INSERT INTO balances (warehouse_id, material_id, qty)
+        VALUES ($1, $2, 0)
+        ON CONFLICT (warehouse_id, material_id) DO NOTHING
+    `, warehouseID, materialID)
+	return err
+}

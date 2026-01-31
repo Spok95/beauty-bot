@@ -571,7 +571,7 @@ func (b *Bot) handleStateMessage(ctx context.Context, msg *tgbotapi.Message) {
 		if brand == "-" {
 			brand = ""
 		}
-		// забираем cat_id из payload и кладём brand
+		// забираем cat_id из payload и НЕ теряем mat_wh_id
 		cidAny, ok := st.Payload["cat_id"]
 		if !ok {
 			b.send(tgbotapi.NewMessage(chatID, "Сессия устарела, выберите категорию ещё раз."))
@@ -579,10 +579,16 @@ func (b *Bot) handleStateMessage(ctx context.Context, msg *tgbotapi.Message) {
 			b.showMaterialMenu(chatID, nil)
 			return
 		}
-		_ = b.states.Set(ctx, chatID, dialog.StateAdmMatName, dialog.Payload{
+
+		p := dialog.Payload{
 			"cat_id": cidAny,
 			"brand":  brand,
-		})
+		}
+		if whAny, ok2 := st.Payload["mat_wh_id"]; ok2 {
+			p["mat_wh_id"] = whAny
+		}
+
+		_ = b.states.Set(ctx, chatID, dialog.StateAdmMatName, p)
 		b.send(tgbotapi.NewMessage(chatID, "Введите название материала сообщением."))
 		return
 
@@ -603,16 +609,39 @@ func (b *Bot) handleStateMessage(ctx context.Context, msg *tgbotapi.Message) {
 			}
 		}
 
-		// Находим или создаём бренд
 		br, err := b.brands.GetOrCreate(ctx, catID, brandName)
 		if err != nil {
 			b.send(tgbotapi.NewMessage(chatID, fmt.Sprintf("Ошибка при обработке бренда: %v", err)))
 			return
 		}
 
-		if _, err := b.materials.Create(ctx, name, catID, br.ID, materials.UnitG); err != nil {
+		// вытаскиваем выбранный склад
+		var whID int64
+		if whAny, ok := st.Payload["mat_wh_id"]; ok {
+			switch v := whAny.(type) {
+			case float64:
+				whID = int64(v)
+			case int64:
+				whID = v
+			case string:
+				if parsed, err := strconv.ParseInt(v, 10, 64); err == nil {
+					whID = parsed
+				}
+			}
+		}
+
+		mat, err := b.materials.Create(ctx, name, catID, br.ID, materials.UnitG)
+		if err != nil {
 			b.send(tgbotapi.NewMessage(chatID, "Ошибка при создании материала"))
 			return
+		}
+
+		// создаём нулевой остаток только для выбранного склада
+		if whID != 0 {
+			if err := b.materials.InitBalanceForWarehouse(ctx, whID, mat.ID); err != nil {
+				b.log.Error("failed to init balance for new material",
+					"err", err, "warehouse_id", whID, "material_id", mat.ID)
+			}
 		}
 
 		_ = b.states.Set(ctx, chatID, dialog.StateAdmMatMenu, dialog.Payload{})
@@ -1397,9 +1426,16 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 			b.showMaterialMenu(fromChat, &cb.Message.MessageID)
 			_ = b.states.Set(ctx, fromChat, dialog.StateAdmMatMenu, dialog.Payload{})
 		case dialog.StateAdmMatName:
+			stCur, _ := b.states.Get(ctx, fromChat)
+			payload := dialog.Payload{}
+			if stCur != nil && stCur.Payload != nil {
+				if whAny, ok := stCur.Payload["mat_wh_id"]; ok {
+					payload["mat_wh_id"] = whAny
+				}
+			}
 			// из ввода имени — назад к выбору категории
 			b.showCategoryPick(ctx, fromChat, cb.Message.MessageID)
-			_ = b.states.Set(ctx, fromChat, dialog.StateAdmMatPickCat, dialog.Payload{})
+			_ = b.states.Set(ctx, fromChat, dialog.StateAdmMatPickCat, payload)
 		case dialog.StateStockMenu:
 			b.showStocksMenu(fromChat, &cb.Message.MessageID)
 			_ = b.states.Set(ctx, fromChat, dialog.StateStockMenu, dialog.Payload{})
@@ -1900,10 +1936,36 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 		return
 
 	case data == "adm:mat:add":
-		_ = b.states.Set(ctx, fromChat, dialog.StateAdmMatPickCat, dialog.Payload{})
-		b.editTextWithNav(fromChat, cb.Message.MessageID, "Сначала выберите категорию для материала.")
-		b.showCategoryPick(ctx, fromChat, cb.Message.MessageID)
+		// сначала выбираем склад
+		if err := b.states.Set(ctx, fromChat, dialog.StateAdmMatPickWarehouse, dialog.Payload{}); err != nil {
+			b.editTextAndClear(fromChat, cb.Message.MessageID, "Ошибка: не удалось начать создание материала")
+			_ = b.answerCallback(cb, "Ошибка", true)
+			return
+		}
+		b.showMaterialWarehousePicker(fromChat, cb.Message.MessageID)
 		_ = b.answerCallback(cb, "Ок", false)
+		return
+
+	case strings.HasPrefix(data, "adm:mat:wh:"):
+		whIDStr := strings.TrimPrefix(data, "adm:mat:wh:")
+		whID, err := strconv.ParseInt(whIDStr, 10, 64)
+		if err != nil {
+			_ = b.answerCallback(cb, "Неверный склад", true)
+			return
+		}
+
+		// сохраним wh_id в payload, но уже перейдём к следующему шагу — выбору категории
+		if err := b.states.Set(ctx, fromChat, dialog.StateAdmMatPickCat, dialog.Payload{
+			"mat_wh_id": whID,
+		}); err != nil {
+			b.editTextAndClear(fromChat, cb.Message.MessageID, "Ошибка: не удалось сохранить выбор склада")
+			_ = b.answerCallback(cb, "Ошибка", true)
+			return
+		}
+
+		b.showCategoryPick(ctx, fromChat, cb.Message.MessageID)
+
+		_ = b.answerCallback(cb, "Склад выбран", false)
 		return
 
 	case data == "adm:mat:list":
@@ -1920,25 +1982,39 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 		return
 
 	case strings.HasPrefix(data, "adm:mat:pickcat:"):
-		// Выбор категории при создании материала
 		cid, _ := strconv.ParseInt(strings.TrimPrefix(data, "adm:mat:pickcat:"), 10, 64)
 
-		// сохраняем выбранную категорию в состоянии
-		_ = b.states.Set(ctx, fromChat, dialog.StateAdmMatBrand, dialog.Payload{
+		// достаём текущий payload, чтобы не потерять mat_wh_id
+		stCur, _ := b.states.Get(ctx, fromChat)
+		p := dialog.Payload{
 			"cat_id": float64(cid),
-		})
+		}
+		if stCur != nil && stCur.Payload != nil {
+			if whAny, ok := stCur.Payload["mat_wh_id"]; ok {
+				p["mat_wh_id"] = whAny
+			}
+		}
 
-		// показываем список брендов + кнопку "Новый бренд"
+		_ = b.states.Set(ctx, fromChat, dialog.StateAdmMatBrand, p)
+
 		b.showMaterialBrandPick(ctx, fromChat, cb.Message.MessageID, cid)
 		_ = b.answerCallback(cb, "Ок", false)
 		return
 
 	case strings.HasPrefix(data, "adm:mat:brand:new:"):
-		// формат: adm:mat:brand:new:<catID>
 		cid, _ := strconv.ParseInt(strings.TrimPrefix(data, "adm:mat:brand:new:"), 10, 64)
-		_ = b.states.Set(ctx, fromChat, dialog.StateAdmMatBrand, dialog.Payload{
+
+		stCur, _ := b.states.Get(ctx, fromChat)
+		p := dialog.Payload{
 			"cat_id": float64(cid),
-		})
+		}
+		if stCur != nil && stCur.Payload != nil {
+			if whAny, ok := stCur.Payload["mat_wh_id"]; ok {
+				p["mat_wh_id"] = whAny
+			}
+		}
+
+		_ = b.states.Set(ctx, fromChat, dialog.StateAdmMatBrand, p)
 		b.editTextWithNav(fromChat, cb.Message.MessageID,
 			"Введите название бренда сообщением (или «-» чтобы оставить без бренда).")
 		_ = b.answerCallback(cb, "Ок", false)
@@ -1960,11 +2036,19 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 		}
 		brand := string(decoded)
 
-		// сразу переходим к вводу названия материала
-		_ = b.states.Set(ctx, fromChat, dialog.StateAdmMatName, dialog.Payload{
+		stCur, _ := b.states.Get(ctx, fromChat)
+		p := dialog.Payload{
 			"cat_id": float64(cid),
 			"brand":  brand,
-		})
+		}
+		if stCur != nil && stCur.Payload != nil {
+			if whAny, ok := stCur.Payload["mat_wh_id"]; ok {
+				p["mat_wh_id"] = whAny
+			}
+		}
+
+		// сразу переходим к вводу названия материала
+		_ = b.states.Set(ctx, fromChat, dialog.StateAdmMatName, p)
 		b.editTextWithNav(
 			fromChat,
 			cb.Message.MessageID,

@@ -25,6 +25,35 @@ func (b *Bot) showMaterialMenu(chatID int64, editMsgID *int) {
 	}
 }
 
+func (b *Bot) showMaterialWarehousePicker(chatID int64, editMsgID int) {
+	ctx := context.Background()
+
+	// тут используем тот же источник складов, что и в stocks/admin_warehouses
+	warehouses, err := b.catalog.ListWarehouses(ctx)
+	if err != nil || len(warehouses) == 0 {
+		b.editTextAndClear(chatID, editMsgID, "Не удалось получить список складов")
+		return
+	}
+
+	var rows [][]tgbotapi.InlineKeyboardButton
+	for _, wh := range warehouses {
+		if !wh.Active { // если у тебя есть флаг Active
+			continue
+		}
+		cb := fmt.Sprintf("adm:mat:wh:%d", wh.ID)
+		rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(wh.Name, cb),
+		))
+	}
+
+	// навигация Назад / Отменить
+	rows = append(rows, navKeyboard(true, true).InlineKeyboard[0])
+
+	kb := tgbotapi.NewInlineKeyboardMarkup(rows...)
+	text := "Выберите склад, к которому будет привязан новый материал:"
+	b.send(tgbotapi.NewEditMessageTextAndMarkup(chatID, editMsgID, text, kb))
+}
+
 func (b *Bot) showMaterialList(ctx context.Context, chatID int64, editMsgID int) {
 	items, err := b.materials.List(ctx, false)
 	if err != nil {

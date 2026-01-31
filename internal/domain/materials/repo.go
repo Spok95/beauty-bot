@@ -159,7 +159,7 @@ func (r *Repo) ListWithBalanceByWarehouse(ctx context.Context, warehouseID int64
 		FROM materials m
 		LEFT JOIN material_brands br
 			ON br.id = m.brand_id
-		LEFT JOIN balances bal
+		JOIN balances bal
 			ON bal.material_id = m.id
 		   AND bal.warehouse_id = $1
 		WHERE m.active = TRUE
@@ -361,4 +361,13 @@ func (r *Repo) ListByBrand(ctx context.Context, brandID int64) ([]Material, erro
 		out = append(out, m)
 	}
 	return out, rows.Err()
+}
+
+func (r *Repo) InitBalanceForWarehouse(ctx context.Context, warehouseID, materialID int64) error {
+	_, err := r.pool.Exec(ctx, `
+        INSERT INTO balances (warehouse_id, material_id, qty)
+        VALUES ($1, $2, 0)
+        ON CONFLICT (warehouse_id, material_id) DO NOTHING
+    `, warehouseID, materialID)
+	return err
 }
