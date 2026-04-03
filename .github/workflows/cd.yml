@@ -51,7 +51,8 @@ jobs:
 
             chmod 600 .env
 
-            docker-compose pull || true
-            docker-compose up -d --build
+            docker --version
+            docker compose version
+            docker compose pull || true
+            docker compose up -d --build
             docker image prune -f
-      
