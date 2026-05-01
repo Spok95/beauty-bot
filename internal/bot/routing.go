@@ -18,6 +18,8 @@ import (
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
+const materialSearchPageSize = 10
+
 func (b *Bot) handleCommand(ctx context.Context, msg *tgbotapi.Message) {
 	chatID := msg.Chat.ID
 	tgID := msg.From.ID
@@ -1003,59 +1005,106 @@ func (b *Bot) handleStateMessage(ctx context.Context, msg *tgbotapi.Message) {
 		return
 
 	case dialog.StateConsSearchByName:
+		delete(st.Payload, "mat_id")
+
 		query := strings.TrimSpace(msg.Text)
 		if query == "" {
 			b.send(tgbotapi.NewMessage(chatID, "Введите часть названия материала."))
 			return
 		}
 
-		mats, err := b.materials.SearchByName(ctx, query, true)
-		if err != nil {
-			b.send(tgbotapi.NewMessage(chatID, "Ошибка поиска материалов. Попробуйте позже."))
-			return
-		}
-		if len(mats) == 0 {
-			b.send(tgbotapi.NewMessage(chatID, "Материалы не найдены, попробуйте другую часть названия."))
-			return
-		}
+		st.Payload["cons_search_query"] = query
+		st.Payload["cons_search_page"] = float64(0)
+		st.Payload["cons_search_loop"] = true
 
-		rows := [][]tgbotapi.InlineKeyboardButton{}
-		for _, m := range mats {
-			label := materialDisplayName(m.Brand, m.Name)
-			rows = append(rows, tgbotapi.NewInlineKeyboardRow(
-				tgbotapi.NewInlineKeyboardButtonData(label, fmt.Sprintf("cons:mat:%d", m.ID)),
-			))
-		}
-		rows = append(rows, navKeyboard(true, true).InlineKeyboard[0])
-		kb := tgbotapi.NewInlineKeyboardMarkup(rows...)
-
-		// переходим к выбору материала из найденного списка
 		_ = b.states.Set(ctx, chatID, dialog.StateConsMatPick, st.Payload)
-		msgOut := tgbotapi.NewMessage(chatID, "Выберите материал:")
-		msgOut.ReplyMarkup = kb
-		b.send(msgOut)
+
+		searchMsg := tgbotapi.NewMessage(chatID, "Ищу материалы...")
+		sent, err := b.api.Send(searchMsg)
+		if err != nil {
+			b.send(tgbotapi.NewMessage(chatID, "Ошибка отправки сообщения. Попробуйте ещё раз."))
+			return
+		}
+
+		b.showMaterialSearchPage(ctx, chatID, sent.MessageID, query, 0)
 		return
 
 	case dialog.StateConsMatQty:
 		s := strings.TrimSpace(msg.Text)
 		s = strings.ReplaceAll(s, ",", ".")
+
 		if strings.Contains(s, ".") {
 			b.send(tgbotapi.NewMessage(chatID, "Введите целое число (граммы/шт)."))
 			return
 		}
+
 		n, err := strconv.ParseInt(s, 10, 64)
+
+		if loop, _ := st.Payload["cons_search_loop"].(bool); loop && err != nil {
+			delete(st.Payload, "mat_id")
+
+			st.Payload["cons_search_query"] = s
+			st.Payload["cons_search_page"] = float64(0)
+			st.Payload["cons_search_loop"] = true
+
+			_ = b.states.Set(ctx, chatID, dialog.StateConsMatPick, st.Payload)
+
+			searchMsg := tgbotapi.NewMessage(chatID, "Ищу материалы...")
+			sent, sendErr := b.api.Send(searchMsg)
+			if sendErr != nil {
+				b.send(tgbotapi.NewMessage(chatID, "Ошибка отправки сообщения. Попробуйте ещё раз."))
+				return
+			}
+
+			b.showMaterialSearchPage(ctx, chatID, sent.MessageID, s, 0)
+			return
+		}
+
 		if err != nil || n <= 0 {
 			b.send(tgbotapi.NewMessage(chatID, "Некорректное значение. Введите целое положительное число."))
 			return
 		}
+
 		items := b.consParseItems(st.Payload["items"])
 		items = append(items, map[string]any{
 			"mat_id": st.Payload["mat_id"],
 			"qty":    float64(n),
 		})
 		st.Payload["items"] = items
+
+		if loop, _ := st.Payload["cons_search_loop"].(bool); loop {
+			delete(st.Payload, "mat_id")
+			delete(st.Payload, "cons_search_page")
+			delete(st.Payload, "cons_search_query")
+
+			_ = b.states.Set(ctx, chatID, dialog.StateConsSearchByName, st.Payload)
+
+			kb := tgbotapi.NewInlineKeyboardMarkup(
+				tgbotapi.NewInlineKeyboardRow(
+					tgbotapi.NewInlineKeyboardButtonData("🧾 К чеку", "cons:search:done"),
+				),
+				navKeyboard(true, true).InlineKeyboard[0],
+			)
+
+			msgOut := tgbotapi.NewMessage(chatID,
+				"Материал добавлен.\n\nВведите название следующего материала или нажмите «К чеку».")
+			msgOut.ReplyMarkup = kb
+			b.send(msgOut)
+			return
+		}
+
 		_ = b.states.Set(ctx, chatID, dialog.StateConsCart, st.Payload)
-		b.showConsCart(ctx, chatID, nil, st.Payload["place"].(string), st.Payload["unit"].(string), int(st.Payload["qty"].(float64)), items)
+
+		b.showConsCart(
+			ctx,
+			chatID,
+			nil,
+			st.Payload["place"].(string),
+			st.Payload["unit"].(string),
+			int(st.Payload["qty"].(float64)),
+			items,
+		)
+
 		return
 
 	case dialog.StateAdmSubsEnterQty:
@@ -1567,7 +1616,26 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 				int(st.Payload["qty"].(float64)),
 				items)
 		case dialog.StateConsMatPick:
-			// назад — снова корзина
+			if loop, _ := st.Payload["cons_search_loop"].(bool); loop {
+				_ = b.states.Set(ctx, fromChat, dialog.StateConsSearchByName, st.Payload)
+
+				kb := tgbotapi.NewInlineKeyboardMarkup(
+					tgbotapi.NewInlineKeyboardRow(
+						tgbotapi.NewInlineKeyboardButtonData("🧾 К чеку", "cons:search:done"),
+					),
+					navKeyboard(true, true).InlineKeyboard[0],
+				)
+
+				msg := tgbotapi.NewEditMessageTextAndMarkup(
+					fromChat,
+					cb.Message.MessageID,
+					"Введите следующий материал или нажмите «К чеку».",
+					kb,
+				)
+				b.send(msg)
+				return
+			}
+
 			items := b.consParseItems(st.Payload["items"])
 			_ = b.states.Set(ctx, fromChat, dialog.StateConsCart, st.Payload)
 			b.showConsCart(ctx, fromChat, &cb.Message.MessageID, st.Payload["place"].(string), st.Payload["unit"].(string), int(st.Payload["qty"].(float64)), items)
@@ -2697,14 +2765,91 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 
 	case data == "cons:search:name":
 		st, _ := b.states.Get(ctx, fromChat)
+		if st.Payload == nil {
+			st.Payload = dialog.Payload{}
+		}
+
+		st.Payload["cons_search_loop"] = true
+
 		_ = b.states.Set(ctx, fromChat, dialog.StateConsSearchByName, st.Payload)
-		b.editTextWithNav(fromChat, cb.Message.MessageID,
-			"Введите часть названия материала (поиск без учёта регистра).")
+
+		kb := tgbotapi.NewInlineKeyboardMarkup(
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("🧾 К чеку", "cons:search:done"),
+			),
+			navKeyboard(true, true).InlineKeyboard[0],
+		)
+
+		msg := tgbotapi.NewEditMessageTextAndMarkup(
+			fromChat,
+			cb.Message.MessageID,
+			"Введите часть названия материала.\n\nМожно искать материалы один за другим. Когда закончите — нажмите «К чеку».",
+			kb,
+		)
+		b.send(msg)
+
+		_ = b.answerCallback(cb, "Ок", false)
+		return
+
+	case data == "cons:search:done":
+		st, _ := b.states.Get(ctx, fromChat)
+		if st == nil || st.Payload == nil {
+			b.editTextAndClear(fromChat, cb.Message.MessageID, "Сессия устарела. Начните заново.")
+			_ = b.answerCallback(cb, "Ошибка", true)
+			return
+		}
+
+		items := b.consParseItems(st.Payload["items"])
+
+		_ = b.states.Set(ctx, fromChat, dialog.StateConsCart, st.Payload)
+
+		b.showConsCart(
+			ctx,
+			fromChat,
+			&cb.Message.MessageID,
+			st.Payload["place"].(string),
+			st.Payload["unit"].(string),
+			int(st.Payload["qty"].(float64)),
+			items,
+		)
+
+		_ = b.answerCallback(cb, "Ок", false)
+		return
+
+	case strings.HasPrefix(data, "cons:search:page:"):
+		st, _ := b.states.Get(ctx, fromChat)
+		if st == nil || st.Payload == nil {
+			b.editTextAndClear(fromChat, cb.Message.MessageID, "Сессия устарела. Начните заново.")
+			_ = b.answerCallback(cb, "Ошибка", true)
+			return
+		}
+
+		page, err := strconv.Atoi(strings.TrimPrefix(data, "cons:search:page:"))
+		if err != nil {
+			_ = b.answerCallback(cb, "Некорректная страница", true)
+			return
+		}
+
+		query, _ := st.Payload["cons_search_query"].(string)
+		if query == "" {
+			_ = b.answerCallback(cb, "Запрос поиска потерян", true)
+			return
+		}
+
+		st.Payload["cons_search_page"] = float64(page)
+		_ = b.states.Set(ctx, fromChat, dialog.StateConsMatPick, st.Payload)
+
+		b.showMaterialSearchPage(ctx, fromChat, cb.Message.MessageID, query, page)
 		_ = b.answerCallback(cb, "Ок", false)
 		return
 
 	case data == "cons:search:params":
 		st, _ := b.states.Get(ctx, fromChat)
+		if st.Payload == nil {
+			st.Payload = dialog.Payload{}
+		}
+		delete(st.Payload, "cons_search_loop")
+
 		_ = b.states.Set(ctx, fromChat, dialog.StateConsMatPick, st.Payload)
 
 		cats, err := b.catalog.ListCategories(ctx)
@@ -2819,11 +2964,31 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 		return
 
 	case strings.HasPrefix(data, "cons:mat:"):
-		matID, _ := strconv.ParseInt(strings.TrimPrefix(data, "cons:mat:"), 10, 64)
+		mid, _ := strconv.ParseInt(strings.TrimPrefix(data, "cons:mat:"), 10, 64)
+
 		st, _ := b.states.Get(ctx, fromChat)
-		st.Payload["mat_id"] = float64(matID)
+		if st.Payload == nil {
+			st.Payload = dialog.Payload{}
+		}
+
+		st.Payload["mat_id"] = float64(mid)
 		_ = b.states.Set(ctx, fromChat, dialog.StateConsMatQty, st.Payload)
-		b.editTextWithNav(fromChat, cb.Message.MessageID, "Введите количество (целое, g/шт)")
+
+		name := "материала"
+		if m, _ := b.materials.GetByID(ctx, mid); m != nil {
+			name = materialDisplayName(m.Brand, m.Name)
+		}
+
+		kb := tgbotapi.NewInlineKeyboardMarkup(navKeyboard(true, true).InlineKeyboard[0])
+
+		msg := tgbotapi.NewEditMessageTextAndMarkup(
+			fromChat,
+			cb.Message.MessageID,
+			fmt.Sprintf("Введите количество для:\n%s\n\nЦелое число, г/шт.", name),
+			kb,
+		)
+		b.send(msg)
+
 		_ = b.answerCallback(cb, "Ок", false)
 		return
 
@@ -3793,4 +3958,117 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 		_ = b.answerCallback(cb, "Сохранено", false)
 		return
 	}
+}
+
+func (b *Bot) showMaterialSearchPage(ctx context.Context, chatID int64, editMsgID int, query string, page int) {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		b.editTextAndClear(chatID, editMsgID, "Пустой запрос поиска.")
+		return
+	}
+
+	mats, err := b.materials.SearchByName(ctx, query, true)
+	if err != nil {
+		b.editTextAndClear(chatID, editMsgID, "Ошибка поиска материалов. Попробуйте позже.")
+		return
+	}
+
+	if len(mats) == 0 {
+		kb := tgbotapi.NewInlineKeyboardMarkup(
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("🔎 Искать другой материал", "cons:search:name"),
+				tgbotapi.NewInlineKeyboardButtonData("🧾 К чеку", "cons:search:done"),
+			),
+			navKeyboard(true, true).InlineKeyboard[0],
+		)
+
+		msg := tgbotapi.NewEditMessageTextAndMarkup(
+			chatID,
+			editMsgID,
+			fmt.Sprintf("По запросу «%s» материалы не найдены.", query),
+			kb,
+		)
+		b.send(msg)
+		return
+	}
+
+	totalPages := (len(mats) + materialSearchPageSize - 1) / materialSearchPageSize
+
+	if page < 0 {
+		page = 0
+	}
+	if page >= totalPages {
+		page = totalPages - 1
+	}
+
+	start := page * materialSearchPageSize
+	end := start + materialSearchPageSize
+	if end > len(mats) {
+		end = len(mats)
+	}
+
+	rows := [][]tgbotapi.InlineKeyboardButton{}
+
+	for _, m := range mats[start:end] {
+		label := materialDisplayName(m.Brand, m.Name)
+		rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(label, fmt.Sprintf("cons:mat:%d", m.ID)),
+		))
+	}
+
+	if totalPages > 1 {
+		pager := []tgbotapi.InlineKeyboardButton{}
+
+		// левая стрелка
+		if page > 0 {
+			pager = append(pager,
+				tgbotapi.NewInlineKeyboardButtonData("⬅️", fmt.Sprintf("cons:search:page:%d", page-1)),
+			)
+		} else {
+			pager = append(pager,
+				tgbotapi.NewInlineKeyboardButtonData(" ", "noop"),
+			)
+		}
+
+		// центр (страница)
+		pager = append(pager,
+			tgbotapi.NewInlineKeyboardButtonData(
+				fmt.Sprintf("%d/%d", page+1, totalPages),
+				"noop",
+			),
+		)
+
+		// правая стрелка
+		if page < totalPages-1 {
+			pager = append(pager,
+				tgbotapi.NewInlineKeyboardButtonData("➡️", fmt.Sprintf("cons:search:page:%d", page+1)),
+			)
+		} else {
+			pager = append(pager,
+				tgbotapi.NewInlineKeyboardButtonData(" ", "noop"),
+			)
+		}
+
+		rows = append(rows, pager)
+	}
+
+	rows = append(rows,
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("🧾 К чеку", "cons:search:done"),
+		),
+	)
+
+	rows = append(rows, navKeyboard(true, true).InlineKeyboard[0])
+
+	kb := tgbotapi.NewInlineKeyboardMarkup(rows...)
+
+	text := fmt.Sprintf(
+		"Выберите материал:\n\nНайдено: %d\nСтраница: %d/%d",
+		len(mats),
+		page+1,
+		totalPages,
+	)
+
+	msg := tgbotapi.NewEditMessageTextAndMarkup(chatID, editMsgID, text, kb)
+	b.send(msg)
 }
