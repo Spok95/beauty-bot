@@ -26,3 +26,15 @@ type Balance struct {
 	MaterialID  int64
 	Qty         float64
 }
+
+type AdminMaterialItem struct {
+	ID           int64
+	Name         string
+	CategoryID   int64
+	CategoryName string
+	BrandID      int64
+	Brand        string
+	Unit         Unit
+	Active       bool
+	PricePerUnit float64
+}

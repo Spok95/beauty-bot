@@ -138,6 +138,55 @@ func (r *Repo) List(ctx context.Context, onlyActive bool) ([]Material, error) {
 	return out, rows.Err()
 }
 
+func (r *Repo) ListForAdminGrouped(ctx context.Context, onlyActive bool) ([]AdminMaterialItem, error) {
+	q := `
+		SELECT
+			m.id,
+			m.name,
+			m.category_id,
+			COALESCE(c.name, '') AS category_name,
+			m.brand_id,
+			COALESCE(b.name, '') AS brand,
+			m.unit,
+			m.active,
+			m.price_per_unit
+		FROM materials m
+		LEFT JOIN material_categories c ON c.id = m.category_id
+		LEFT JOIN material_brands b ON b.id = m.brand_id
+	`
+	if onlyActive {
+		q += " WHERE m.active = TRUE"
+	}
+	q += " ORDER BY COALESCE(c.name, ''), COALESCE(b.name, ''), m.name"
+
+	rows, err := r.pool.Query(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []AdminMaterialItem
+	for rows.Next() {
+		var m AdminMaterialItem
+		if err := rows.Scan(
+			&m.ID,
+			&m.Name,
+			&m.CategoryID,
+			&m.CategoryName,
+			&m.BrandID,
+			&m.Brand,
+			&m.Unit,
+			&m.Active,
+			&m.PricePerUnit,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+
+	return out, rows.Err()
+}
+
 type MatWithBal struct {
 	ID         int64
 	Name       string

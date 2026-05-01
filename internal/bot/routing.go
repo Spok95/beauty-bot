@@ -1394,11 +1394,40 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 			b.showWarehouseMenu(fromChat, &cb.Message.MessageID)
 			_ = b.states.Set(ctx, fromChat, dialog.StateAdmWhMenu, dialog.Payload{})
 		case dialog.StateAdmMatList:
-			// из списка — назад в меню материалов
-			b.showMaterialMenu(fromChat, &cb.Message.MessageID)
-			_ = b.states.Set(ctx, fromChat, dialog.StateAdmMatMenu, dialog.Payload{})
+			level, _ := st.Payload["level"].(string)
+
+			switch level {
+			case "materials":
+				catID := int64(st.Payload["cat_id"].(float64))
+				b.showMaterialBrandList(ctx, fromChat, cb.Message.MessageID, catID)
+				_ = b.states.Set(ctx, fromChat, dialog.StateAdmMatList, dialog.Payload{
+					"level":  "brands",
+					"cat_id": float64(catID),
+				})
+
+			case "brands":
+				b.showMaterialList(ctx, fromChat, cb.Message.MessageID)
+				_ = b.states.Set(ctx, fromChat, dialog.StateAdmMatList, dialog.Payload{})
+
+			default:
+				b.showMaterialMenu(fromChat, &cb.Message.MessageID)
+				_ = b.states.Set(ctx, fromChat, dialog.StateAdmMatMenu, dialog.Payload{})
+			}
 		case dialog.StateAdmMatItem:
-			// из карточки — назад в список
+			if idAny, ok := st.Payload["mat_id"]; ok {
+				id := int64(idAny.(float64))
+				m, _ := b.materials.GetByID(ctx, id)
+				if m != nil {
+					b.showMaterialListByBrand(ctx, fromChat, cb.Message.MessageID, m.CategoryID, m.Brand)
+					_ = b.states.Set(ctx, fromChat, dialog.StateAdmMatList, dialog.Payload{
+						"level":  "materials",
+						"cat_id": float64(m.CategoryID),
+						"brand":  m.Brand,
+					})
+					return
+				}
+			}
+
 			b.showMaterialList(ctx, fromChat, cb.Message.MessageID)
 			_ = b.states.Set(ctx, fromChat, dialog.StateAdmMatList, dialog.Payload{})
 		case dialog.StateAdmMatUnit:
@@ -1968,9 +1997,61 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 		_ = b.answerCallback(cb, "Склад выбран", false)
 		return
 
+	case data == "noop":
+		_ = b.answerCallback(cb, "", false)
+		return
+
 	case data == "adm:mat:list":
 		_ = b.states.Set(ctx, fromChat, dialog.StateAdmMatList, dialog.Payload{})
 		b.showMaterialList(ctx, fromChat, cb.Message.MessageID)
+		_ = b.answerCallback(cb, "Ок", false)
+		return
+
+	case strings.HasPrefix(data, "adm:mat:list:cat:"):
+		cid, err := strconv.ParseInt(strings.TrimPrefix(data, "adm:mat:list:cat:"), 10, 64)
+		if err != nil {
+			_ = b.answerCallback(cb, "Некорректная категория", true)
+			return
+		}
+
+		_ = b.states.Set(ctx, fromChat, dialog.StateAdmMatList, dialog.Payload{
+			"level":  "brands",
+			"cat_id": float64(cid),
+		})
+
+		b.showMaterialBrandList(ctx, fromChat, cb.Message.MessageID, cid)
+		_ = b.answerCallback(cb, "Ок", false)
+		return
+
+	case strings.HasPrefix(data, "adm:mat:list:brand:"):
+		tail := strings.TrimPrefix(data, "adm:mat:list:brand:")
+		parts := strings.SplitN(tail, ":", 2)
+		if len(parts) != 2 {
+			_ = b.answerCallback(cb, "Некорректные данные", true)
+			return
+		}
+
+		cid, err := strconv.ParseInt(parts[0], 10, 64)
+		if err != nil {
+			_ = b.answerCallback(cb, "Некорректная категория", true)
+			return
+		}
+
+		decoded, err := base64.StdEncoding.DecodeString(parts[1])
+		if err != nil {
+			_ = b.answerCallback(cb, "Некорректный бренд", true)
+			return
+		}
+
+		brand := string(decoded)
+
+		_ = b.states.Set(ctx, fromChat, dialog.StateAdmMatList, dialog.Payload{
+			"level":  "materials",
+			"cat_id": float64(cid),
+			"brand":  brand,
+		})
+
+		b.showMaterialListByBrand(ctx, fromChat, cb.Message.MessageID, cid, brand)
 		_ = b.answerCallback(cb, "Ок", false)
 		return
 

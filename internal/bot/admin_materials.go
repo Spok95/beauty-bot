@@ -55,27 +55,99 @@ func (b *Bot) showMaterialWarehousePicker(chatID int64, editMsgID int) {
 }
 
 func (b *Bot) showMaterialList(ctx context.Context, chatID int64, editMsgID int) {
-	items, err := b.materials.List(ctx, false)
+	categories, err := b.catalog.ListCategories(ctx)
+	if err != nil {
+		b.editTextAndClear(chatID, editMsgID, "Ошибка загрузки категорий")
+		return
+	}
+
+	rows := [][]tgbotapi.InlineKeyboardButton{}
+
+	for _, c := range categories {
+		rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(
+				fmt.Sprintf("%s %s", badge(c.Active), c.Name),
+				fmt.Sprintf("adm:mat:list:cat:%d", c.ID),
+			),
+		))
+	}
+
+	rows = append(rows, navKeyboard(true, true).InlineKeyboard[0])
+
+	kb := tgbotapi.NewInlineKeyboardMarkup(rows...)
+	b.send(tgbotapi.NewEditMessageTextAndMarkup(chatID, editMsgID, "Список материалов:\n\nВыберите категорию:", kb))
+}
+
+func (b *Bot) showMaterialBrandList(ctx context.Context, chatID int64, editMsgID int, catID int64) {
+	categoryName := fmt.Sprintf("ID:%d", catID)
+	if c, _ := b.catalog.GetCategoryByID(ctx, catID); c != nil {
+		categoryName = c.Name
+	}
+
+	brands, err := b.materials.ListBrandsByCategory(ctx, catID)
+	if err != nil {
+		b.editTextAndClear(chatID, editMsgID, "Ошибка загрузки брендов")
+		return
+	}
+
+	rows := [][]tgbotapi.InlineKeyboardButton{}
+
+	for _, br := range brands {
+		if br == "" {
+			br = "Без бренда"
+		}
+
+		b64 := base64.StdEncoding.EncodeToString([]byte(br))
+		rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(
+				"🏷 "+br,
+				fmt.Sprintf("adm:mat:list:brand:%d:%s", catID, b64),
+			),
+		))
+	}
+
+	rows = append(rows, navKeyboard(true, true).InlineKeyboard[0])
+
+	kb := tgbotapi.NewInlineKeyboardMarkup(rows...)
+	text := fmt.Sprintf(
+		"Список материалов:\n\nКатегория: %s\n\nВыберите бренд:",
+		categoryName,
+	)
+
+	b.send(tgbotapi.NewEditMessageTextAndMarkup(chatID, editMsgID, text, kb))
+}
+
+func (b *Bot) showMaterialListByBrand(ctx context.Context, chatID int64, editMsgID int, catID int64, brand string) {
+	categoryName := fmt.Sprintf("ID:%d", catID)
+	if c, _ := b.catalog.GetCategoryByID(ctx, catID); c != nil {
+		categoryName = c.Name
+	}
+
+	materialsList, err := b.materials.ListByCategoryAndBrand(ctx, catID, brand)
 	if err != nil {
 		b.editTextAndClear(chatID, editMsgID, "Ошибка загрузки материалов")
 		return
 	}
-	rows := [][]tgbotapi.InlineKeyboardButton{}
-	for _, m := range items {
-		// имя для списка: если есть бренд, показываем "Бренд / Название"
-		name := m.Name
-		if m.Brand != "" {
-			name = fmt.Sprintf("%s / %s", m.Brand, m.Name)
-		}
 
-		label := fmt.Sprintf("%s %s", badge(m.Active), name)
+	rows := [][]tgbotapi.InlineKeyboardButton{}
+
+	for _, m := range materialsList {
+		label := fmt.Sprintf("%s %s", badge(m.Active), materialDisplayName(m.Brand, m.Name))
 		rows = append(rows, tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData(label, fmt.Sprintf("adm:mat:menu:%d", m.ID)),
 		))
 	}
+
 	rows = append(rows, navKeyboard(true, true).InlineKeyboard[0])
+
 	kb := tgbotapi.NewInlineKeyboardMarkup(rows...)
-	b.send(tgbotapi.NewEditMessageTextAndMarkup(chatID, editMsgID, "Список материалов:", kb))
+	text := fmt.Sprintf(
+		"Список материалов:\n\nКатегория: %s\nБренд: %s\n\nВыберите материал:",
+		categoryName,
+		brand,
+	)
+
+	b.send(tgbotapi.NewEditMessageTextAndMarkup(chatID, editMsgID, text, kb))
 }
 
 func (b *Bot) showMaterialItemMenu(ctx context.Context, chatID int64, editMsgID int, id int64) {
@@ -113,11 +185,7 @@ func (b *Bot) showMaterialItemMenu(ctx context.Context, chatID int64, editMsgID 
 		catName = c.Name
 	}
 
-	// Отображаемое имя: с брендом, если он есть
-	matName := m.Name
-	if m.Brand != "" {
-		matName = fmt.Sprintf("%s / %s", m.Brand, m.Name)
-	}
+	matName := materialDisplayName(m.Brand, m.Name)
 
 	text := fmt.Sprintf(
 		"Материал: %s %s\nКатегория: %s\nЕд.: %s\nСтатус: %v",

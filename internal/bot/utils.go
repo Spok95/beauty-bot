@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/Spok95/beauty-bot/internal/dialog"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -127,4 +128,25 @@ func badge(b bool) string {
 		return "🟢"
 	}
 	return "🚫"
+}
+
+func materialDisplayName(brand, name string) string {
+	brand = strings.TrimSpace(brand)
+	name = strings.TrimSpace(name)
+
+	if brand == "" {
+		return name
+	}
+	if name == "" {
+		return brand
+	}
+
+	lowerBrand := strings.ToLower(brand)
+	lowerName := strings.ToLower(name)
+
+	if strings.HasPrefix(lowerName, lowerBrand+" ") {
+		return name
+	}
+
+	return brand + " " + name
 }
