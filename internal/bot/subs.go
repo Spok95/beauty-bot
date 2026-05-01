@@ -139,11 +139,7 @@ func (b *Bot) showConsCart(ctx context.Context, chatID int64, editMsgID *int, pl
 		q := int64(it["qty"].(float64))
 		name := fmt.Sprintf("ID:%d", matID)
 		if m, _ := b.materials.GetByID(ctx, matID); m != nil {
-			if m.Brand != "" {
-				name = fmt.Sprintf("%s / %s", m.Brand, m.Name)
-			} else {
-				name = m.Name
-			}
+			name = materialDisplayName(m.Brand, m.Name)
 		}
 
 		price, _ := b.materials.GetPrice(ctx, matID)
