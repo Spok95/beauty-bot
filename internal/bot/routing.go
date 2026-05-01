@@ -1093,6 +1093,15 @@ func (b *Bot) handleStateMessage(ctx context.Context, msg *tgbotapi.Message) {
 			return
 		}
 
+		delete(st.Payload, "mat_id")
+		delete(st.Payload, "cons_pick_level")
+		delete(st.Payload, "cons_cat_id")
+		delete(st.Payload, "cons_cat_name")
+		delete(st.Payload, "cons_brand_id")
+		delete(st.Payload, "cons_brand_name")
+		delete(st.Payload, "cons_brand_ids")
+		delete(st.Payload, "cons_brand_names")
+
 		_ = b.states.Set(ctx, chatID, dialog.StateConsCart, st.Payload)
 
 		b.showConsCart(
@@ -1636,23 +1645,48 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 				return
 			}
 
+			level, _ := st.Payload["cons_pick_level"].(string)
+
+			switch level {
+			case "materials":
+				catID := payloadInt64(st.Payload["cons_cat_id"])
+				if catID > 0 {
+					b.showConsBrandList(ctx, fromChat, cb.Message.MessageID, st.Payload, catID)
+					return
+				}
+
+			case "brands":
+				b.showConsCategoryList(ctx, fromChat, cb.Message.MessageID, st.Payload)
+				return
+
+			case "categories":
+				_ = b.states.Set(ctx, fromChat, dialog.StateConsMatSearch, st.Payload)
+				b.showConsMaterialSearchMenu(fromChat, cb.Message.MessageID)
+				return
+			}
+
 			items := b.consParseItems(st.Payload["items"])
 			_ = b.states.Set(ctx, fromChat, dialog.StateConsCart, st.Payload)
-			b.showConsCart(ctx, fromChat, &cb.Message.MessageID, st.Payload["place"].(string), st.Payload["unit"].(string), int(st.Payload["qty"].(float64)), items)
+			b.showConsCart(
+				ctx,
+				fromChat,
+				&cb.Message.MessageID,
+				st.Payload["place"].(string),
+				st.Payload["unit"].(string),
+				int(st.Payload["qty"].(float64)),
+				items,
+			)
 		case dialog.StateConsMatQty:
-			// назад к выбору способа поиска материала
-			_ = b.states.Set(ctx, fromChat, dialog.StateConsMatSearch, st.Payload)
-			rows := [][]tgbotapi.InlineKeyboardButton{
-				{
-					tgbotapi.NewInlineKeyboardButtonData("Поиск по названию", "cons:search:name"),
-				},
-				{
-					tgbotapi.NewInlineKeyboardButtonData("Поиск по параметрам", "cons:search:params"),
-				},
-				navKeyboard(true, true).InlineKeyboard[0],
+			if brandID := payloadInt64(st.Payload["cons_brand_id"]); brandID > 0 {
+				delete(st.Payload, "mat_id")
+				st.Payload["cons_pick_level"] = "materials"
+
+				b.showConsMaterialListByBrand(ctx, fromChat, cb.Message.MessageID, st.Payload, brandID)
+				return
 			}
-			kb := tgbotapi.NewInlineKeyboardMarkup(rows...)
-			b.send(tgbotapi.NewEditMessageTextAndMarkup(fromChat, cb.Message.MessageID, "Как искать материал?", kb))
+
+			_ = b.states.Set(ctx, fromChat, dialog.StateConsMatSearch, st.Payload)
+			b.showConsMaterialSearchMenu(fromChat, cb.Message.MessageID)
 		case dialog.StateConsSummary:
 			// назад в корзину
 			items := b.consParseItems(st.Payload["items"])
@@ -2747,19 +2781,26 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 		// Добавить материал
 	case data == "cons:additem":
 		st, _ := b.states.Get(ctx, fromChat)
+		if st.Payload == nil {
+			st.Payload = dialog.Payload{}
+		}
+
+		delete(st.Payload, "cons_pick_level")
+		delete(st.Payload, "cons_cat_id")
+		delete(st.Payload, "cons_cat_name")
+		delete(st.Payload, "cons_brand_id")
+		delete(st.Payload, "cons_brand_name")
+		delete(st.Payload, "cons_brand_ids")
+		delete(st.Payload, "cons_brand_names")
+		delete(st.Payload, "mat_id")
+		delete(st.Payload, "cons_search_loop")
+		delete(st.Payload, "cons_search_query")
+		delete(st.Payload, "cons_search_page")
+
 		_ = b.states.Set(ctx, fromChat, dialog.StateConsMatSearch, st.Payload)
 
-		rows := [][]tgbotapi.InlineKeyboardButton{
-			{
-				tgbotapi.NewInlineKeyboardButtonData("Поиск по названию", "cons:search:name"),
-			},
-			{
-				tgbotapi.NewInlineKeyboardButtonData("Поиск по параметрам", "cons:search:params"),
-			},
-			navKeyboard(true, true).InlineKeyboard[0],
-		}
-		kb := tgbotapi.NewInlineKeyboardMarkup(rows...)
-		b.send(tgbotapi.NewEditMessageTextAndMarkup(fromChat, cb.Message.MessageID, "Как искать материал?", kb))
+		b.showConsMaterialSearchMenu(fromChat, cb.Message.MessageID)
+
 		_ = b.answerCallback(cb, "Ок", false)
 		return
 
@@ -2848,79 +2889,68 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 		if st.Payload == nil {
 			st.Payload = dialog.Payload{}
 		}
+
 		delete(st.Payload, "cons_search_loop")
+		delete(st.Payload, "cons_search_query")
+		delete(st.Payload, "cons_search_page")
+		delete(st.Payload, "mat_id")
 
-		_ = b.states.Set(ctx, fromChat, dialog.StateConsMatPick, st.Payload)
+		b.showConsCategoryList(ctx, fromChat, cb.Message.MessageID, st.Payload)
 
-		cats, err := b.catalog.ListCategories(ctx)
-		if err != nil || len(cats) == 0 {
-			b.editTextAndClear(fromChat, cb.Message.MessageID, "Не удалось загрузить категории материалов.")
-			_ = b.answerCallback(cb, "Ошибка", true)
-			return
-		}
-
-		rows := [][]tgbotapi.InlineKeyboardButton{}
-		for _, c := range cats {
-			rows = append(rows, tgbotapi.NewInlineKeyboardRow(
-				tgbotapi.NewInlineKeyboardButtonData(c.Name, fmt.Sprintf("cons:cat:%d", c.ID)),
-			))
-		}
-		rows = append(rows, navKeyboard(true, true).InlineKeyboard[0])
-		kb := tgbotapi.NewInlineKeyboardMarkup(rows...)
-		b.send(tgbotapi.NewEditMessageTextAndMarkup(fromChat, cb.Message.MessageID, "Выберите категорию:", kb))
 		_ = b.answerCallback(cb, "Ок", false)
 		return
 
 	case strings.HasPrefix(data, "cons:cat:"):
-		catID, _ := strconv.ParseInt(strings.TrimPrefix(data, "cons:cat:"), 10, 64)
+		catID, err := strconv.ParseInt(strings.TrimPrefix(data, "cons:cat:"), 10, 64)
+		if err != nil {
+			_ = b.answerCallback(cb, "Некорректная категория", true)
+			return
+		}
+
 		st, _ := b.states.Get(ctx, fromChat)
 		if st.Payload == nil {
 			st.Payload = dialog.Payload{}
 		}
-		st.Payload["cons_cat_id"] = float64(catID)
 
-		brands, err := b.brands.ListByCategory(ctx, catID, true)
+		b.showConsBrandList(ctx, fromChat, cb.Message.MessageID, st.Payload, catID)
+
+		_ = b.answerCallback(cb, "Ок", false)
+		return
+
+	case strings.HasPrefix(data, "cons:brand:page:"):
+		st, _ := b.states.Get(ctx, fromChat)
+		if st == nil || st.Payload == nil {
+			b.editTextAndClear(fromChat, cb.Message.MessageID, "Сессия устарела.")
+			return
+		}
+
+		page, err := strconv.Atoi(strings.TrimPrefix(data, "cons:brand:page:"))
 		if err != nil {
-			b.editTextAndClear(fromChat, cb.Message.MessageID, "Ошибка загрузки брендов.")
-			_ = b.answerCallback(cb, "Ошибка", true)
-			return
-		}
-		if len(brands) == 0 {
-			b.editTextAndClear(fromChat, cb.Message.MessageID, "В этой категории пока нет брендов.")
-			_ = b.answerCallback(cb, "Готово", false)
+			_ = b.answerCallback(cb, "Ошибка страницы", true)
 			return
 		}
 
-		// сохраняем бренды в payload
-		var ids []any
-		var names []any
-		for _, br := range brands {
-			ids = append(ids, br.ID)
-			names = append(names, br.Name)
+		brandID := payloadInt64(st.Payload["cons_brand_id"])
+		if brandID <= 0 {
+			_ = b.answerCallback(cb, "Ошибка бренда", true)
+			return
 		}
-		st.Payload["cons_brand_ids"] = ids
-		st.Payload["cons_brand_names"] = names
+
+		st.Payload["cons_mat_page"] = float64(page)
+
 		_ = b.states.Set(ctx, fromChat, dialog.StateConsMatPick, st.Payload)
 
-		rows := [][]tgbotapi.InlineKeyboardButton{}
-		for i, br := range brands {
-			label := br.Name
-			if label == "" {
-				label = "Без бренда"
-			}
-			rows = append(rows, tgbotapi.NewInlineKeyboardRow(
-				tgbotapi.NewInlineKeyboardButtonData(label, fmt.Sprintf("cons:brand:%d", i)),
-			))
-		}
-		rows = append(rows, navKeyboard(true, true).InlineKeyboard[0])
-		kb := tgbotapi.NewInlineKeyboardMarkup(rows...)
-		b.send(tgbotapi.NewEditMessageTextAndMarkup(fromChat, cb.Message.MessageID, "Выберите бренд:", kb))
+		b.showConsMaterialListByBrand(ctx, fromChat, cb.Message.MessageID, st.Payload, brandID)
 		_ = b.answerCallback(cb, "Ок", false)
 		return
 
 	case strings.HasPrefix(data, "cons:brand:"):
 		idxStr := strings.TrimPrefix(data, "cons:brand:")
-		i, _ := strconv.Atoi(idxStr)
+		i, err := strconv.Atoi(idxStr)
+		if err != nil {
+			_ = b.answerCallback(cb, "Ошибка выбора бренда", true)
+			return
+		}
 
 		st, _ := b.states.Get(ctx, fromChat)
 		if st == nil || st.Payload == nil {
@@ -2935,31 +2965,18 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 			_ = b.answerCallback(cb, "Ошибка", true)
 			return
 		}
-		brandID := int64(rawIDs[i].(float64))
 
-		mats, err := b.materials.ListByBrand(ctx, brandID)
-		if err != nil {
-			b.editTextAndClear(fromChat, cb.Message.MessageID, "Ошибка загрузки материалов.")
+		brandID := payloadInt64(rawIDs[i])
+		if brandID <= 0 {
+			b.editTextAndClear(fromChat, cb.Message.MessageID, "Ошибка выбора бренда.")
 			_ = b.answerCallback(cb, "Ошибка", true)
 			return
 		}
-		if len(mats) == 0 {
-			b.editTextAndClear(fromChat, cb.Message.MessageID, "В этом бренде нет материалов.")
-			_ = b.answerCallback(cb, "Готово", false)
-			return
-		}
 
-		rows := [][]tgbotapi.InlineKeyboardButton{}
-		for _, m := range mats {
-			label := materialDisplayName(m.Brand, m.Name)
-			rows = append(rows, tgbotapi.NewInlineKeyboardRow(
-				tgbotapi.NewInlineKeyboardButtonData(label, fmt.Sprintf("cons:mat:%d", m.ID)),
-			))
-		}
-		rows = append(rows, navKeyboard(true, true).InlineKeyboard[0])
-		kb := tgbotapi.NewInlineKeyboardMarkup(rows...)
-		_ = b.states.Set(ctx, fromChat, dialog.StateConsMatPick, st.Payload)
-		b.send(tgbotapi.NewEditMessageTextAndMarkup(fromChat, cb.Message.MessageID, "Выберите материал:", kb))
+		delete(st.Payload, "cons_mat_page")
+
+		b.showConsMaterialListByBrand(ctx, fromChat, cb.Message.MessageID, st.Payload, brandID)
+
 		_ = b.answerCallback(cb, "Ок", false)
 		return
 
@@ -2972,6 +2989,11 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 		}
 
 		st.Payload["mat_id"] = float64(mid)
+
+		if _, ok := st.Payload["cons_brand_id"]; ok {
+			st.Payload["cons_pick_level"] = "qty"
+		}
+
 		_ = b.states.Set(ctx, fromChat, dialog.StateConsMatQty, st.Payload)
 
 		name := "материала"
@@ -4071,4 +4093,244 @@ func (b *Bot) showMaterialSearchPage(ctx context.Context, chatID int64, editMsgI
 
 	msg := tgbotapi.NewEditMessageTextAndMarkup(chatID, editMsgID, text, kb)
 	b.send(msg)
+}
+
+func (b *Bot) showConsMaterialSearchMenu(chatID int64, editMsgID int) {
+	rows := [][]tgbotapi.InlineKeyboardButton{
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("Поиск по названию", "cons:search:name"),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("Поиск по параметрам", "cons:search:params"),
+		),
+		navKeyboard(true, true).InlineKeyboard[0],
+	}
+
+	kb := tgbotapi.NewInlineKeyboardMarkup(rows...)
+	b.send(tgbotapi.NewEditMessageTextAndMarkup(chatID, editMsgID, "Как искать материал?", kb))
+}
+
+func (b *Bot) showConsCategoryList(ctx context.Context, chatID int64, editMsgID int, payload dialog.Payload) {
+	cats, err := b.catalog.ListCategories(ctx)
+	if err != nil || len(cats) == 0 {
+		b.editTextAndClear(chatID, editMsgID, "Не удалось загрузить категории материалов.")
+		return
+	}
+
+	delete(payload, "cons_cat_id")
+	delete(payload, "cons_cat_name")
+	delete(payload, "cons_brand_id")
+	delete(payload, "cons_brand_name")
+	delete(payload, "cons_brand_ids")
+	delete(payload, "cons_brand_names")
+	delete(payload, "mat_id")
+
+	payload["cons_pick_level"] = "categories"
+	_ = b.states.Set(ctx, chatID, dialog.StateConsMatPick, payload)
+
+	rows := [][]tgbotapi.InlineKeyboardButton{}
+	for _, c := range cats {
+		rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(c.Name, fmt.Sprintf("cons:cat:%d", c.ID)),
+		))
+	}
+
+	rows = append(rows, navKeyboard(true, true).InlineKeyboard[0])
+
+	kb := tgbotapi.NewInlineKeyboardMarkup(rows...)
+	b.send(tgbotapi.NewEditMessageTextAndMarkup(chatID, editMsgID, "Выберите категорию:", kb))
+}
+
+func (b *Bot) showConsBrandList(ctx context.Context, chatID int64, editMsgID int, payload dialog.Payload, catID int64) {
+	categoryName := fmt.Sprintf("ID:%d", catID)
+	if c, _ := b.catalog.GetCategoryByID(ctx, catID); c != nil {
+		categoryName = c.Name
+	}
+
+	brands, err := b.brands.ListByCategory(ctx, catID, true)
+	if err != nil {
+		b.editTextAndClear(chatID, editMsgID, "Ошибка загрузки брендов.")
+		return
+	}
+
+	if len(brands) == 0 {
+		b.editTextAndClear(chatID, editMsgID, "В этой категории пока нет брендов.")
+		return
+	}
+
+	var ids []any
+	var names []any
+
+	rows := [][]tgbotapi.InlineKeyboardButton{}
+	for i, br := range brands {
+		ids = append(ids, float64(br.ID))
+		names = append(names, br.Name)
+
+		label := br.Name
+		if label == "" {
+			label = "Без бренда"
+		}
+
+		rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(label, fmt.Sprintf("cons:brand:%d", i)),
+		))
+	}
+
+	payload["cons_cat_id"] = float64(catID)
+	payload["cons_cat_name"] = categoryName
+	payload["cons_brand_ids"] = ids
+	payload["cons_brand_names"] = names
+	payload["cons_pick_level"] = "brands"
+
+	delete(payload, "cons_brand_id")
+	delete(payload, "cons_brand_name")
+	delete(payload, "mat_id")
+
+	_ = b.states.Set(ctx, chatID, dialog.StateConsMatPick, payload)
+
+	text := fmt.Sprintf(
+		"Категория: %s\n\nВыберите бренд:",
+		categoryName,
+	)
+
+	rows = append(rows, navKeyboard(true, true).InlineKeyboard[0])
+
+	kb := tgbotapi.NewInlineKeyboardMarkup(rows...)
+	b.send(tgbotapi.NewEditMessageTextAndMarkup(chatID, editMsgID, text, kb))
+}
+
+func (b *Bot) showConsMaterialListByBrand(
+	ctx context.Context,
+	chatID int64,
+	editMsgID int,
+	payload dialog.Payload,
+	brandID int64,
+) {
+	categoryName, _ := payload["cons_cat_name"].(string)
+	if categoryName == "" {
+		categoryName = "Категория"
+	}
+
+	brandName := "Бренд"
+	if rawNames, ok := payload["cons_brand_names"].([]any); ok {
+		if rawIDs, ok := payload["cons_brand_ids"].([]any); ok {
+			for i := range rawIDs {
+				id := payloadInt64(rawIDs[i])
+				if id == brandID && i < len(rawNames) {
+					if name, ok := rawNames[i].(string); ok && name != "" {
+						brandName = name
+					}
+				}
+			}
+		}
+	}
+
+	mats, err := b.materials.ListByBrand(ctx, brandID)
+	if err != nil {
+		b.editTextAndClear(chatID, editMsgID, "Ошибка загрузки материалов.")
+		return
+	}
+
+	if len(mats) == 0 {
+		b.editTextAndClear(chatID, editMsgID, "В этом бренде нет материалов.")
+		return
+	}
+
+	// 👉 текущая страница
+	page := 0
+	if v, ok := payload["cons_mat_page"].(float64); ok {
+		page = int(v)
+	}
+
+	totalPages := (len(mats) + materialSearchPageSize - 1) / materialSearchPageSize
+
+	if page < 0 {
+		page = 0
+	}
+	if page >= totalPages {
+		page = totalPages - 1
+	}
+
+	start := page * materialSearchPageSize
+	end := start + materialSearchPageSize
+	if end > len(mats) {
+		end = len(mats)
+	}
+
+	rows := [][]tgbotapi.InlineKeyboardButton{}
+
+	for _, m := range mats[start:end] {
+		label := materialDisplayName(m.Brand, m.Name)
+
+		rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(label, fmt.Sprintf("cons:mat:%d", m.ID)),
+		))
+	}
+
+	// 👉 пагинация
+	if totalPages > 1 {
+		pager := []tgbotapi.InlineKeyboardButton{}
+
+		if page > 0 {
+			pager = append(pager,
+				tgbotapi.NewInlineKeyboardButtonData("⬅️", fmt.Sprintf("cons:brand:page:%d", page-1)),
+			)
+		} else {
+			pager = append(pager,
+				tgbotapi.NewInlineKeyboardButtonData(" ", "noop"),
+			)
+		}
+
+		pager = append(pager,
+			tgbotapi.NewInlineKeyboardButtonData(fmt.Sprintf("%d/%d", page+1, totalPages), "noop"),
+		)
+
+		if page < totalPages-1 {
+			pager = append(pager,
+				tgbotapi.NewInlineKeyboardButtonData("➡️", fmt.Sprintf("cons:brand:page:%d", page+1)),
+			)
+		} else {
+			pager = append(pager,
+				tgbotapi.NewInlineKeyboardButtonData(" ", "noop"),
+			)
+		}
+
+		rows = append(rows, pager)
+	}
+
+	payload["cons_brand_id"] = float64(brandID)
+	payload["cons_brand_name"] = brandName
+	payload["cons_pick_level"] = "materials"
+	payload["cons_mat_page"] = float64(page)
+
+	delete(payload, "mat_id")
+
+	_ = b.states.Set(ctx, chatID, dialog.StateConsMatPick, payload)
+
+	text := fmt.Sprintf(
+		"Категория: %s\nБренд: %s\n\nМатериалы: %d\nСтраница: %d/%d",
+		categoryName,
+		brandName,
+		len(mats),
+		page+1,
+		totalPages,
+	)
+
+	rows = append(rows, navKeyboard(true, true).InlineKeyboard[0])
+
+	kb := tgbotapi.NewInlineKeyboardMarkup(rows...)
+	b.send(tgbotapi.NewEditMessageTextAndMarkup(chatID, editMsgID, text, kb))
+}
+
+func payloadInt64(v any) int64 {
+	switch x := v.(type) {
+	case int64:
+		return x
+	case int:
+		return int64(x)
+	case float64:
+		return int64(x)
+	default:
+		return 0
+	}
 }
