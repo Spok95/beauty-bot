@@ -28,13 +28,7 @@ func (b *Bot) showStockItem(ctx context.Context, chatID int64, editMsgID int, wh
 	whTitle := fmt.Sprintf("ID:%d", whID)
 	if w != nil {
 		// человекочитаемый тип
-		t := "неизвестный"
-		switch w.Type {
-		case catalog.WHTConsumables:
-			t = "расходники"
-		case catalog.WHTClientService:
-			t = "клиентский"
-		}
+		t := warehouseTypeLabel(w.Type)
 		whTitle = fmt.Sprintf("%s (%s)", w.Name, t)
 	}
 
@@ -640,4 +634,17 @@ func (b *Bot) exportWarehouseStocksExcel(ctx context.Context, chatID int64, msgI
 
 	b.editTextWithNav(chatID, msgID,
 		fmt.Sprintf("Сформирован файл с остатками для склада «%s».", wh.Name))
+}
+
+func warehouseTypeLabel(t catalog.WarehouseType) string {
+	switch t {
+	case catalog.WHTConsumables:
+		return "расходники"
+	case catalog.WHTClientService:
+		return "клиентский"
+	case catalog.WHTOther:
+		return "прочий"
+	default:
+		return string(t)
+	}
 }

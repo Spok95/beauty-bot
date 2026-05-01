@@ -59,6 +59,9 @@ func (b *Bot) showWarehouseItemMenu(ctx context.Context, chatID int64, editMsgID
 		rows = append(rows, tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData("✏️ Переименовать", fmt.Sprintf("adm:wh:rn:%d", id)),
 		))
+		rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("📁 Категории материалов", fmt.Sprintf("adm:wh:cats:%d", id)),
+		))
 	}
 	rows = append(rows, tgbotapi.NewInlineKeyboardRow(
 		tgbotapi.NewInlineKeyboardButtonData(toggle, fmt.Sprintf("adm:wh:tg:%d", id)),
@@ -66,6 +69,60 @@ func (b *Bot) showWarehouseItemMenu(ctx context.Context, chatID int64, editMsgID
 	rows = append(rows, navKeyboard(true, true).InlineKeyboard[0])
 
 	kb := tgbotapi.NewInlineKeyboardMarkup(rows...)
-	text := fmt.Sprintf("Склад: %s %s\nТип: %s\nСтатус: %v", badge(w.Active), w.Name, w.Type, w.Active)
+	text := fmt.Sprintf(
+		"Склад: %s %s\nТип: %s\nСтатус: %v",
+		badge(w.Active),
+		w.Name,
+		warehouseTypeLabel(w.Type),
+		w.Active,
+	)
+	b.send(tgbotapi.NewEditMessageTextAndMarkup(chatID, editMsgID, text, kb))
+}
+
+func (b *Bot) showWarehouseCategoryLinks(ctx context.Context, chatID int64, editMsgID int, warehouseID int64) {
+	w, err := b.catalog.GetWarehouseByID(ctx, warehouseID)
+	if err != nil || w == nil {
+		b.editTextAndClear(chatID, editMsgID, "Склад не найден")
+		return
+	}
+
+	items, err := b.catalog.ListCategoriesForWarehouse(ctx, warehouseID)
+	if err != nil {
+		b.editTextAndClear(chatID, editMsgID, "Ошибка загрузки категорий склада")
+		return
+	}
+
+	rows := [][]tgbotapi.InlineKeyboardButton{}
+
+	for _, c := range items {
+		mark := "⬜️"
+		if c.Linked {
+			mark = "✅"
+		}
+
+		status := ""
+		if !c.Active {
+			status = " (скрыта)"
+		}
+
+		label := fmt.Sprintf("%s %s%s", mark, c.CategoryName, status)
+
+		rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(
+				label,
+				fmt.Sprintf("adm:wh:cat:toggle:%d:%d", warehouseID, c.CategoryID),
+			),
+		))
+	}
+
+	rows = append(rows, navKeyboard(true, true).InlineKeyboard[0])
+
+	kb := tgbotapi.NewInlineKeyboardMarkup(rows...)
+
+	text := fmt.Sprintf(
+		"Склад: %s\n\nКатегории материалов для склада:\n✅ — категория используется на складе\n⬜️ — категория не используется",
+		w.Name,
+	)
+
 	b.send(tgbotapi.NewEditMessageTextAndMarkup(chatID, editMsgID, text, kb))
 }

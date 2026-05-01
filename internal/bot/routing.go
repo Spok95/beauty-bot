@@ -510,6 +510,9 @@ func (b *Bot) handleStateMessage(ctx context.Context, msg *tgbotapi.Message) {
 				tgbotapi.NewInlineKeyboardButtonData("Расходники", "adm:wh:type:consumables"),
 				tgbotapi.NewInlineKeyboardButtonData("Клиентский", "adm:wh:type:client_service"),
 			),
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("Прочий", "adm:wh:type:other"),
+			),
 			navKeyboard(true, true).InlineKeyboard[0],
 		)
 		m := tgbotapi.NewMessage(chatID, "Выберите тип склада:")
@@ -1416,6 +1419,26 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 			_ = b.states.Set(ctx, fromChat, dialog.StateAdmWhName, st.Payload)
 			b.editTextAndClear(fromChat, cb.Message.MessageID, "Введите название склада сообщением.")
 		case dialog.StateAdmWhMenu:
+			if st.Payload != nil {
+				if links, _ := st.Payload["wh_cat_links"].(bool); links {
+					id := payloadInt64(st.Payload["wh_id"])
+					if id > 0 {
+						_ = b.states.Set(ctx, fromChat, dialog.StateAdmWhMenu, dialog.Payload{
+							"wh_id": float64(id),
+						})
+						b.showWarehouseItemMenu(ctx, fromChat, cb.Message.MessageID, id)
+						return
+					}
+				}
+
+				id := payloadInt64(st.Payload["wh_id"])
+				if id > 0 {
+					_ = b.states.Set(ctx, fromChat, dialog.StateAdmWhMenu, dialog.Payload{})
+					b.showWarehouseList(ctx, fromChat, cb.Message.MessageID)
+					return
+				}
+			}
+
 			b.showWarehouseMenu(fromChat, &cb.Message.MessageID)
 			_ = b.states.Set(ctx, fromChat, dialog.StateAdmWhMenu, dialog.Payload{})
 		case dialog.StateAdmCatMenu:
@@ -1946,6 +1969,23 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 		_ = b.answerCallback(cb, "Ок", false)
 		return
 
+	case strings.HasPrefix(data, "adm:wh:cats:"):
+		id, err := strconv.ParseInt(strings.TrimPrefix(data, "adm:wh:cats:"), 10, 64)
+		if err != nil {
+			_ = b.answerCallback(cb, "Ошибка склада", true)
+			return
+		}
+
+		_ = b.states.Set(ctx, fromChat, dialog.StateAdmWhMenu, dialog.Payload{
+			"wh_id":        float64(id),
+			"wh_cat_links": true,
+		})
+
+		b.showWarehouseCategoryLinks(ctx, fromChat, cb.Message.MessageID, id)
+
+		_ = b.answerCallback(cb, "Ок", false)
+		return
+
 	case strings.HasPrefix(data, "adm:wh:rn:"):
 		id, _ := strconv.ParseInt(strings.TrimPrefix(data, "adm:wh:rn:"), 10, 64)
 		w, _ := b.catalog.GetWarehouseByID(ctx, id)
@@ -1991,11 +2031,18 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 		}
 		whName, _ := dialog.GetString(st.Payload, "wh_name")
 		tStr := strings.TrimPrefix(data, "adm:wh:type:")
+
 		var t catalog.WarehouseType
-		if tStr == "client_service" {
-			t = catalog.WHTClientService
-		} else {
+		switch tStr {
+		case string(catalog.WHTConsumables):
 			t = catalog.WHTConsumables
+		case string(catalog.WHTClientService):
+			t = catalog.WHTClientService
+		case string(catalog.WHTOther):
+			t = catalog.WHTOther
+		default:
+			_ = b.answerCallback(cb, "Неизвестный тип склада", true)
+			return
 		}
 
 		if _, err := b.catalog.CreateWarehouse(ctx, whName, t); err != nil {
@@ -2007,6 +2054,54 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 		_ = b.states.Set(ctx, fromChat, dialog.StateAdmWhMenu, dialog.Payload{})
 		b.showWarehouseMenu(fromChat, nil)
 		_ = b.answerCallback(cb, "Создано", false)
+		return
+
+	case strings.HasPrefix(data, "adm:wh:cat:toggle:"):
+		tail := strings.TrimPrefix(data, "adm:wh:cat:toggle:")
+		parts := strings.Split(tail, ":")
+		if len(parts) != 2 {
+			_ = b.answerCallback(cb, "Некорректные данные", true)
+			return
+		}
+
+		warehouseID, err := strconv.ParseInt(parts[0], 10, 64)
+		if err != nil {
+			_ = b.answerCallback(cb, "Ошибка склада", true)
+			return
+		}
+
+		categoryID, err := strconv.ParseInt(parts[1], 10, 64)
+		if err != nil {
+			_ = b.answerCallback(cb, "Ошибка категории", true)
+			return
+		}
+
+		linked, err := b.catalog.IsCategoryLinkedToWarehouse(ctx, warehouseID, categoryID)
+		if err != nil {
+			_ = b.answerCallback(cb, "Ошибка проверки связи", true)
+			return
+		}
+
+		if linked {
+			if err := b.catalog.UnlinkCategoryFromWarehouse(ctx, warehouseID, categoryID); err != nil {
+				_ = b.answerCallback(cb, "Ошибка отвязки", true)
+				return
+			}
+		} else {
+			if err := b.catalog.LinkCategoryToWarehouse(ctx, warehouseID, categoryID); err != nil {
+				_ = b.answerCallback(cb, "Ошибка привязки", true)
+				return
+			}
+		}
+
+		_ = b.states.Set(ctx, fromChat, dialog.StateAdmWhMenu, dialog.Payload{
+			"wh_id":        float64(warehouseID),
+			"wh_cat_links": true,
+		})
+
+		b.showWarehouseCategoryLinks(ctx, fromChat, cb.Message.MessageID, warehouseID)
+
+		_ = b.answerCallback(cb, "Готово", false)
 		return
 
 	case data == "adm:cat:add":
