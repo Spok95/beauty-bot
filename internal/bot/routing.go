@@ -1021,10 +1021,7 @@ func (b *Bot) handleStateMessage(ctx context.Context, msg *tgbotapi.Message) {
 
 		rows := [][]tgbotapi.InlineKeyboardButton{}
 		for _, m := range mats {
-			label := m.Name
-			if m.Brand != "" {
-				label = fmt.Sprintf("%s / %s", m.Brand, m.Name)
-			}
+			label := materialDisplayName(m.Brand, m.Name)
 			rows = append(rows, tgbotapi.NewInlineKeyboardRow(
 				tgbotapi.NewInlineKeyboardButtonData(label, fmt.Sprintf("cons:mat:%d", m.ID)),
 			))
@@ -2809,10 +2806,7 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 
 		rows := [][]tgbotapi.InlineKeyboardButton{}
 		for _, m := range mats {
-			label := m.Name
-			if m.Brand != "" {
-				label = fmt.Sprintf("%s / %s", m.Brand, m.Name)
-			}
+			label := materialDisplayName(m.Brand, m.Name)
 			rows = append(rows, tgbotapi.NewInlineKeyboardRow(
 				tgbotapi.NewInlineKeyboardButtonData(label, fmt.Sprintf("cons:mat:%d", m.ID)),
 			))
@@ -2971,111 +2965,29 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 		_ = b.states.Set(ctx, fromChat, dialog.StateConsSummary, st.Payload)
 
 		// 5) вывод сводки с детализацией по частям
-		placeRU := map[string]string{"hall": "Зал", "cabinet": "Кабинет"}
-		unitRU := map[string]string{"hour": "ч", "day": "дн"}
+		txt := b.buildConsumptionReceipt(ctx, st.Payload, "Проверь перед подтверждением:")
 
-		lines := []string{
-			fmt.Sprintf("Сводка затрат для оплаты%s:", map[bool]string{true: " (с абонементом)", false: ""}[withSub]),
-			fmt.Sprintf("Помещение: %s", placeRU[place]),
-			fmt.Sprintf("Кол-во: %d %s", qty, unitRU[unit]),
-			fmt.Sprintf("Материалы: %.2f ₽ (для порогов округлено до %.2f ₽)", mats, rounded),
-			"",
-			"Аренда по частям:",
-		}
-
-		var subQty, noSubQty int
-
-		for i, pr := range partResults {
-			m := metas[i]
-
-			var price float64
-			if pr.ThresholdMet {
-				price = pr.Rate.PriceWith
-			} else {
-				price = pr.Rate.PriceOwn
-			}
-
-			label := "без абонемента"
-			if m.WithSub {
-				label = fmt.Sprintf("по абонементу на %d %s", m.PlanLimit, unitRU[unit])
-				subQty += m.Qty
-			} else {
-				noSubQty += m.Qty
-			}
-
-			// аренда по этой части К ОПЛАТЕ
-			lineRent := pr.Rent
-			cond := ""
-
-			if m.WithSub {
-				// аренда оплачена заранее абонементом
-				lineRent = 0
-				cond = "оплачено абонементом"
-
-				// без указания цены за единицу
-				lines = append(lines,
-					fmt.Sprintf(
-						"• %d %s %s: %.2f ₽ (%s; порог %.0f ₽, в зачёт пошло %.0f ₽)",
-						m.Qty, unitRU[unit], label,
-						lineRent, cond, pr.Need, pr.MaterialsUsed,
-					),
-				)
-			} else {
-				// обычная аренда без абонемента, тут всё как раньше
-				cond = map[bool]string{
-					true:  "условие по материалам выполнено",
-					false: "условие по материалам не выполнено",
-				}[pr.ThresholdMet]
-
-				lines = append(lines,
-					fmt.Sprintf(
-						"• %d %s %s: %.2f ₽ (%.2f ₽ за единицу, %s; порог %.0f ₽, в зачёт пошло %.0f ₽)",
-						m.Qty, unitRU[unit], label,
-						lineRent, price, cond, pr.Need, pr.MaterialsUsed,
-					),
-				)
-			}
-		}
-
-		lines = append(lines, "")
-		lines = append(lines, fmt.Sprintf("Аренда всего: %.2f ₽", rentToPay))
-		lines = append(lines, fmt.Sprintf("Итого к оплате: %.2f ₽", total))
-
-		// предупреждение, если часть часов ушла без абонемента
-		warn := ""
-		if withSub && noSubQty > 0 {
-			warn = fmt.Sprintf(
-				"⚠️ Обратите внимание: абонемента хватает на %d %s, ещё %d %s считаются по тарифу без абонемента.\n\n"+
-					"Вы можете:\n"+
-					"• вернуться и сначала купить новый абонемент, затем ещё раз посчитать;\n"+
-					"• подтвердить текущую сводку и оплатить как есть.",
-				subQty, unitRU[unit], noSubQty, unitRU[unit],
-			)
-		}
-
-		txt := strings.Join(lines, "\n")
-		if warn != "" {
-			txt = warn + "\n\n" + txt
-		}
-
-		// клавиатура
 		rows := [][]tgbotapi.InlineKeyboardButton{
 			tgbotapi.NewInlineKeyboardRow(
 				tgbotapi.NewInlineKeyboardButtonData("✅ Подтвердить", "cons:confirm"),
 			),
 		}
-		if warn != "" {
-			rows = append(rows, tgbotapi.NewInlineKeyboardRow(
-				tgbotapi.NewInlineKeyboardButtonData("Купить абонемент", "cons:buy_sub"),
-			))
+
+		if withSub {
+			for _, part := range parseRentParts(st.Payload["rent_parts"]) {
+				if !payloadBool(part, "with_sub") {
+					rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+						tgbotapi.NewInlineKeyboardButtonData("Купить абонемент", "cons:buy_sub"),
+					))
+					break
+				}
+			}
 		}
-		// навигация назад / в меню
+
 		rows = append(rows, navKeyboard(true, true).InlineKeyboard[0])
 
 		kb := tgbotapi.NewInlineKeyboardMarkup(rows...)
-		b.editTextWithNav(fromChat, cb.Message.MessageID, txt)
-		msg := tgbotapi.NewEditMessageReplyMarkup(fromChat, cb.Message.MessageID, kb)
-		b.send(msg)
+		b.send(tgbotapi.NewEditMessageTextAndMarkup(fromChat, cb.Message.MessageID, txt, kb))
 		_ = b.answerCallback(cb, "Ок", false)
 		return
 
@@ -3352,8 +3264,9 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 		}
 
 		// сообщение мастеру о завершении расчёта
-		b.editTextAndClear(fromChat, cb.Message.MessageID,
-			"Сессия подтверждена. Списание материалов и расчёт завершены.")
+		receiptText := b.buildConsumptionReceipt(ctx, st.Payload, "✅ Сессия подтверждена.\n\nЧек:")
+
+		b.editTextAndClear(fromChat, cb.Message.MessageID, receiptText)
 
 		// если сформировалась ссылка на оплату – даём кнопку мастеру
 		if payURL != "" {
@@ -3364,12 +3277,10 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 						payURL,
 					),
 				),
-				// навигация назад/в меню — как обычно
 				navKeyboard(true, true).InlineKeyboard[0],
 			)
 
-			msg := tgbotapi.NewMessage(fromChat,
-				fmt.Sprintf("К оплате: %.2f ₽.\nНажмите кнопку ниже, чтобы перейти к оплате.", total))
+			msg := tgbotapi.NewMessage(fromChat, "Перейти к оплате:")
 			msg.ReplyMarkup = kb
 			b.send(msg)
 		}
