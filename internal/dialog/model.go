@@ -58,6 +58,7 @@ const (
 	StateSupJournalTo   State = "sup_journal_to"   // ждём дату конца
 
 	// Расход/Аренда (мастер)
+	StateConsWhPick       State = "cons_wh_pick"     // выбор склада для расхода
 	StateConsComment      State = "cons_comment"     // комментарий к сессии (дата/примечание)
 	StateConsPlace        State = "cons_place"       // выбор: зал/кабинет
 	StateConsQty          State = "cons_qty"         // кол-во часов/дней (int)
