@@ -58,15 +58,16 @@ const (
 	StateSupJournalTo   State = "sup_journal_to"   // ждём дату конца
 
 	// Расход/Аренда (мастер)
-	StateConsWhPick       State = "cons_wh_pick"     // выбор склада для расхода
-	StateConsComment      State = "cons_comment"     // комментарий к сессии (дата/примечание)
-	StateConsPlace        State = "cons_place"       // выбор: зал/кабинет
-	StateConsQty          State = "cons_qty"         // кол-во часов/дней (int)
-	StateConsMatSearch    State = "cons_mat_search"  // меню: выбор способа поиска материала
-	StateConsSearchByName State = "cons_search_name" // ввод строки для поиска по названию
-	StateConsMatPick      State = "cons_mat_pick"    // список найденных материалов
-	StateConsMatQty       State = "cons_mat_qty"     // int (г/шт)
-	StateConsCart         State = "cons_cart"        // корзина материалов
+	StateConsWhPick       State = "cons_wh_pick"       // выбор склада для расхода
+	StateConsComment      State = "cons_comment"       // комментарий к сессии (дата/примечание)
+	StateConsPlace        State = "cons_place"         // выбор: зал/кабинет
+	StateConsQty          State = "cons_qty"           // кол-во часов/дней (int)
+	StateConsMatSearch    State = "cons_mat_search"    // меню: выбор способа поиска материала
+	StateConsSearchByName State = "cons_search_name"   // ввод строки для поиска по названию
+	StateConsMatPick      State = "cons_mat_pick"      // список найденных материалов
+	StateConsMatQty       State = "cons_mat_qty"       // int (г/шт)
+	StateConsCart         State = "cons_cart"          // корзина материалов
+	StateConsFinalComment State = "cons_final_comment" // комментарий перед итоговым чеком
 	StateConsSummary      State = "cons_summary"
 
 	// Абонементы (админ)
