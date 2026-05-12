@@ -47,6 +47,11 @@ func (b *Bot) buildConsumptionReceipt(ctx context.Context, payload dialog.Payloa
 		comment = strings.TrimSpace(v)
 	}
 
+	finalComment := ""
+	if v, ok := payload["final_comment"].(string); ok {
+		finalComment = strings.TrimSpace(v)
+	}
+
 	placeRU := map[string]string{
 		"hall":    "Зал",
 		"cabinet": "Кабинет",
@@ -69,6 +74,10 @@ func (b *Bot) buildConsumptionReceipt(ctx context.Context, payload dialog.Payloa
 
 	if comment != "" {
 		lines = append(lines, fmt.Sprintf("• Комментарий: %s", comment))
+	}
+
+	if finalComment != "" {
+		lines = append(lines, fmt.Sprintf("• Комментарий мастера: %s", finalComment))
 	}
 
 	if withSub {
