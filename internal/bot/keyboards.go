@@ -75,7 +75,7 @@ func masterReplyKeyboard() tgbotapi.ReplyKeyboardMarkup {
 	return tgbotapi.ReplyKeyboardMarkup{
 		ResizeKeyboard: true,
 		Keyboard: [][]tgbotapi.KeyboardButton{
-			{tgbotapi.NewKeyboardButton("Расход/Аренда")},
+			{tgbotapi.NewKeyboardButton("Расход/Аренда"), tgbotapi.NewKeyboardButton("Текущий чек")},
 			{tgbotapi.NewKeyboardButton("Просмотр остатков")},
 			{tgbotapi.NewKeyboardButton("Мои абонементы"), tgbotapi.NewKeyboardButton("Купить абонемент")},
 			{tgbotapi.NewKeyboardButton("Чат с админом")},
