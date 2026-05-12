@@ -140,6 +140,16 @@ func (b *Bot) handleStateMessage(ctx context.Context, msg *tgbotapi.Message) {
 		return
 	}
 
+	if msg.Text == "Текущий чек" {
+		u, _ := b.users.GetByTelegramID(ctx, tgID)
+		if u == nil || u.Status != users.StatusApproved || u.Role != users.RoleMaster {
+			return
+		}
+
+		b.showCurrentConsumptionCheck(ctx, chatID, tgID)
+		return
+	}
+
 	if msg.Text == "Просмотр остатков" {
 		u, _ := b.users.GetByTelegramID(ctx, tgID)
 		if u == nil || u.Status != users.StatusApproved || u.Role != users.RoleMaster {
