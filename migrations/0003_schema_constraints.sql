@@ -82,6 +82,15 @@ ALTER TABLE invoices
 CREATE INDEX IF NOT EXISTS idx_invoices_user_status
     ON invoices(user_id, status);
 
+CREATE TABLE IF NOT EXISTS warehouse_material_categories (
+                                                             warehouse_id BIGINT NOT NULL REFERENCES warehouses(id) ON DELETE CASCADE,
+                                                             category_id  BIGINT NOT NULL REFERENCES material_categories(id) ON DELETE CASCADE,
+                                                             created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+                                                             PRIMARY KEY (warehouse_id, category_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_wh_mat_cats_category
+    ON warehouse_material_categories(category_id);
 
 -- +goose Down
 
@@ -106,3 +115,5 @@ ALTER TABLE subscriptions DROP CONSTRAINT IF EXISTS chk_subscriptions_qty;
 ALTER TABLE subscriptions DROP CONSTRAINT IF EXISTS chk_subscriptions_unit;
 ALTER TABLE subscriptions DROP CONSTRAINT IF EXISTS chk_subscriptions_place;
 ALTER TABLE subscriptions DROP CONSTRAINT IF EXISTS fk_subscriptions_user;
+
+DROP TABLE IF EXISTS warehouse_material_categories;

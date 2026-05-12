@@ -7,6 +7,7 @@ type WarehouseType string
 const (
 	WHTConsumables   WarehouseType = "consumables"    // склад расходников
 	WHTClientService WarehouseType = "client_service" // склад клиентского обслуживания
+	WHTOther         WarehouseType = "other"          // прочий склад
 )
 
 type Warehouse struct {
@@ -22,4 +23,12 @@ type Category struct {
 	Name      string
 	Active    bool
 	CreatedAt time.Time
+}
+
+type WarehouseCategory struct {
+	WarehouseID  int64
+	CategoryID   int64
+	CategoryName string
+	Active       bool
+	Linked       bool
 }

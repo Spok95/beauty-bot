@@ -136,18 +136,7 @@ func (b *Bot) handleStateMessage(ctx context.Context, msg *tgbotapi.Message) {
 		if u == nil || u.Status != users.StatusApproved || u.Role != users.RoleMaster {
 			return
 		}
-		_ = b.states.Set(ctx, chatID, dialog.StateConsComment, dialog.Payload{})
-
-		kb := tgbotapi.NewInlineKeyboardMarkup(
-			tgbotapi.NewInlineKeyboardRow(
-				tgbotapi.NewInlineKeyboardButtonData("Пропустить", "cons:comment_skip"),
-			),
-			navKeyboard(false, true).InlineKeyboard[0],
-		)
-		m := tgbotapi.NewMessage(chatID,
-			"Введите дату за которую подаете данные или если дата совпадает, то нажмите «Пропустить».")
-		m.ReplyMarkup = kb
-		b.send(m)
+		b.showConsumptionWarehousePick(ctx, chatID, nil, u)
 		return
 	}
 
@@ -509,6 +498,9 @@ func (b *Bot) handleStateMessage(ctx context.Context, msg *tgbotapi.Message) {
 			tgbotapi.NewInlineKeyboardRow(
 				tgbotapi.NewInlineKeyboardButtonData("Расходники", "adm:wh:type:consumables"),
 				tgbotapi.NewInlineKeyboardButtonData("Клиентский", "adm:wh:type:client_service"),
+			),
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("Прочий", "adm:wh:type:other"),
 			),
 			navKeyboard(true, true).InlineKeyboard[0],
 		)
@@ -970,7 +962,11 @@ func (b *Bot) handleStateMessage(ctx context.Context, msg *tgbotapi.Message) {
 			return
 		}
 
-		payload := dialog.Payload{"comment": text}
+		payload := st.Payload
+		if payload == nil {
+			payload = dialog.Payload{}
+		}
+		payload["comment"] = text
 		_ = b.states.Set(ctx, chatID, dialog.StateConsPlace, payload)
 
 		kb := tgbotapi.NewInlineKeyboardMarkup(
@@ -1416,6 +1412,26 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 			_ = b.states.Set(ctx, fromChat, dialog.StateAdmWhName, st.Payload)
 			b.editTextAndClear(fromChat, cb.Message.MessageID, "Введите название склада сообщением.")
 		case dialog.StateAdmWhMenu:
+			if st.Payload != nil {
+				if links, _ := st.Payload["wh_cat_links"].(bool); links {
+					id := payloadInt64(st.Payload["wh_id"])
+					if id > 0 {
+						_ = b.states.Set(ctx, fromChat, dialog.StateAdmWhMenu, dialog.Payload{
+							"wh_id": float64(id),
+						})
+						b.showWarehouseItemMenu(ctx, fromChat, cb.Message.MessageID, id)
+						return
+					}
+				}
+
+				id := payloadInt64(st.Payload["wh_id"])
+				if id > 0 {
+					_ = b.states.Set(ctx, fromChat, dialog.StateAdmWhMenu, dialog.Payload{})
+					b.showWarehouseList(ctx, fromChat, cb.Message.MessageID)
+					return
+				}
+			}
+
 			b.showWarehouseMenu(fromChat, &cb.Message.MessageID)
 			_ = b.states.Set(ctx, fromChat, dialog.StateAdmWhMenu, dialog.Payload{})
 		case dialog.StateAdmCatMenu:
@@ -1946,6 +1962,23 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 		_ = b.answerCallback(cb, "Ок", false)
 		return
 
+	case strings.HasPrefix(data, "adm:wh:cats:"):
+		id, err := strconv.ParseInt(strings.TrimPrefix(data, "adm:wh:cats:"), 10, 64)
+		if err != nil {
+			_ = b.answerCallback(cb, "Ошибка склада", true)
+			return
+		}
+
+		_ = b.states.Set(ctx, fromChat, dialog.StateAdmWhMenu, dialog.Payload{
+			"wh_id":        float64(id),
+			"wh_cat_links": true,
+		})
+
+		b.showWarehouseCategoryLinks(ctx, fromChat, cb.Message.MessageID, id)
+
+		_ = b.answerCallback(cb, "Ок", false)
+		return
+
 	case strings.HasPrefix(data, "adm:wh:rn:"):
 		id, _ := strconv.ParseInt(strings.TrimPrefix(data, "adm:wh:rn:"), 10, 64)
 		w, _ := b.catalog.GetWarehouseByID(ctx, id)
@@ -1991,11 +2024,18 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 		}
 		whName, _ := dialog.GetString(st.Payload, "wh_name")
 		tStr := strings.TrimPrefix(data, "adm:wh:type:")
+
 		var t catalog.WarehouseType
-		if tStr == "client_service" {
-			t = catalog.WHTClientService
-		} else {
+		switch tStr {
+		case string(catalog.WHTConsumables):
 			t = catalog.WHTConsumables
+		case string(catalog.WHTClientService):
+			t = catalog.WHTClientService
+		case string(catalog.WHTOther):
+			t = catalog.WHTOther
+		default:
+			_ = b.answerCallback(cb, "Неизвестный тип склада", true)
+			return
 		}
 
 		if _, err := b.catalog.CreateWarehouse(ctx, whName, t); err != nil {
@@ -2007,6 +2047,54 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 		_ = b.states.Set(ctx, fromChat, dialog.StateAdmWhMenu, dialog.Payload{})
 		b.showWarehouseMenu(fromChat, nil)
 		_ = b.answerCallback(cb, "Создано", false)
+		return
+
+	case strings.HasPrefix(data, "adm:wh:cat:toggle:"):
+		tail := strings.TrimPrefix(data, "adm:wh:cat:toggle:")
+		parts := strings.Split(tail, ":")
+		if len(parts) != 2 {
+			_ = b.answerCallback(cb, "Некорректные данные", true)
+			return
+		}
+
+		warehouseID, err := strconv.ParseInt(parts[0], 10, 64)
+		if err != nil {
+			_ = b.answerCallback(cb, "Ошибка склада", true)
+			return
+		}
+
+		categoryID, err := strconv.ParseInt(parts[1], 10, 64)
+		if err != nil {
+			_ = b.answerCallback(cb, "Ошибка категории", true)
+			return
+		}
+
+		linked, err := b.catalog.IsCategoryLinkedToWarehouse(ctx, warehouseID, categoryID)
+		if err != nil {
+			_ = b.answerCallback(cb, "Ошибка проверки связи", true)
+			return
+		}
+
+		if linked {
+			if err := b.catalog.UnlinkCategoryFromWarehouse(ctx, warehouseID, categoryID); err != nil {
+				_ = b.answerCallback(cb, "Ошибка отвязки", true)
+				return
+			}
+		} else {
+			if err := b.catalog.LinkCategoryToWarehouse(ctx, warehouseID, categoryID); err != nil {
+				_ = b.answerCallback(cb, "Ошибка привязки", true)
+				return
+			}
+		}
+
+		_ = b.states.Set(ctx, fromChat, dialog.StateAdmWhMenu, dialog.Payload{
+			"wh_id":        float64(warehouseID),
+			"wh_cat_links": true,
+		})
+
+		b.showWarehouseCategoryLinks(ctx, fromChat, cb.Message.MessageID, warehouseID)
+
+		_ = b.answerCallback(cb, "Готово", false)
 		return
 
 	case data == "adm:cat:add":
@@ -2722,10 +2810,61 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 		_ = b.answerCallback(cb, "Ок", false)
 		return
 
+	case strings.HasPrefix(data, "cons:wh:"):
+		warehouseID, err := strconv.ParseInt(strings.TrimPrefix(data, "cons:wh:"), 10, 64)
+		if err != nil {
+			_ = b.answerCallback(cb, "Некорректный склад", true)
+			return
+		}
+
+		u, err := b.users.GetByTelegramID(ctx, cb.From.ID)
+		if err != nil || u == nil || u.Status != users.StatusApproved {
+			_ = b.answerCallback(cb, "Нет доступа", true)
+			return
+		}
+
+		allowed, err := b.allowedWarehousesForUser(ctx, u)
+		if err != nil {
+			_ = b.answerCallback(cb, "Ошибка загрузки складов", true)
+			return
+		}
+
+		var selected *catalog.Warehouse
+		for i := range allowed {
+			if allowed[i].ID == warehouseID {
+				selected = &allowed[i]
+				break
+			}
+		}
+
+		if selected == nil {
+			_ = b.answerCallback(cb, "Склад недоступен", true)
+			return
+		}
+
+		payload := dialog.Payload{
+			"warehouse_id":   float64(selected.ID),
+			"warehouse_name": selected.Name,
+		}
+
+		_ = b.states.Set(ctx, fromChat, dialog.StateConsComment, payload)
+
+		b.showConsumptionCommentStep(fromChat, &cb.Message.MessageID)
+
+		_ = b.answerCallback(cb, "Ок", false)
+		return
+
 		// Расход/Аренда: пропустить ввод комментария
 	case data == "cons:comment_skip":
 		// пустой комментарий, сразу переходим к выбору помещения
-		payload := dialog.Payload{"comment": ""}
+		st, _ := b.states.Get(ctx, fromChat)
+
+		payload := dialog.Payload{}
+		if st != nil && st.Payload != nil {
+			payload = st.Payload
+		}
+
+		payload["comment"] = ""
 		_ = b.states.Set(ctx, fromChat, dialog.StateConsPlace, payload)
 
 		kb := tgbotapi.NewInlineKeyboardMarkup(
@@ -2767,6 +2906,15 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 			"place":    place,
 			"unit":     unit,
 			"with_sub": withSub,
+		}
+
+		if st != nil && st.Payload != nil {
+			if v, ok := st.Payload["warehouse_id"]; ok {
+				payload["warehouse_id"] = v
+			}
+			if v, ok := st.Payload["warehouse_name"]; ok {
+				payload["warehouse_name"] = v
+			}
 		}
 		if comment != "" {
 			payload["comment"] = comment
@@ -3243,10 +3391,10 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 			comment = v
 		}
 
-		// найдём склад Расходники (только с него списываем)
-		whID, err := b.getConsumablesWarehouseID(ctx)
-		if err != nil {
-			b.editTextAndClear(fromChat, cb.Message.MessageID, "Склад 'Расходники' не найден")
+		// найдём склад (только с него списываем)
+		whID := payloadInt64(st.Payload["warehouse_id"])
+		if whID <= 0 {
+			b.editTextAndClear(fromChat, cb.Message.MessageID, "Склад не выбран. Начните расчёт заново.")
 			_ = b.answerCallback(cb, "Ошибка", true)
 			return
 		}
@@ -4111,9 +4259,19 @@ func (b *Bot) showConsMaterialSearchMenu(chatID int64, editMsgID int) {
 }
 
 func (b *Bot) showConsCategoryList(ctx context.Context, chatID int64, editMsgID int, payload dialog.Payload) {
-	cats, err := b.catalog.ListCategories(ctx)
+	warehouseID := payloadInt64(payload["warehouse_id"])
+
+	var cats []catalog.Category
+	var err error
+
+	if warehouseID > 0 {
+		cats, err = b.catalog.ListLinkedCategoriesByWarehouse(ctx, warehouseID)
+	} else {
+		cats, err = b.catalog.ListCategories(ctx)
+	}
+
 	if err != nil || len(cats) == 0 {
-		b.editTextAndClear(chatID, editMsgID, "Не удалось загрузить категории материалов.")
+		b.editTextAndClear(chatID, editMsgID, "Для выбранного склада не настроены категории материалов.")
 		return
 	}
 

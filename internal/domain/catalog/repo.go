@@ -202,3 +202,99 @@ func (r *Repo) SetCategoryActive(ctx context.Context, id int64, active bool) (*C
 	}
 	return &c, nil
 }
+
+func (r *Repo) ListCategoriesForWarehouse(ctx context.Context, warehouseID int64) ([]WarehouseCategory, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT
+			$1::BIGINT AS warehouse_id,
+			c.id AS category_id,
+			c.name AS category_name,
+			c.active,
+			(wmc.warehouse_id IS NOT NULL) AS linked
+		FROM material_categories c
+		LEFT JOIN warehouse_material_categories wmc
+			ON wmc.category_id = c.id
+			AND wmc.warehouse_id = $1
+		ORDER BY c.name
+	`, warehouseID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []WarehouseCategory
+	for rows.Next() {
+		var item WarehouseCategory
+		if err := rows.Scan(
+			&item.WarehouseID,
+			&item.CategoryID,
+			&item.CategoryName,
+			&item.Active,
+			&item.Linked,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, item)
+	}
+
+	return out, rows.Err()
+}
+
+func (r *Repo) ListLinkedCategoriesByWarehouse(ctx context.Context, warehouseID int64) ([]Category, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT c.id, c.name, c.active, c.created_at
+		FROM material_categories c
+		INNER JOIN warehouse_material_categories wmc
+			ON wmc.category_id = c.id
+		WHERE wmc.warehouse_id = $1
+			AND c.active = TRUE
+		ORDER BY c.name
+	`, warehouseID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []Category
+	for rows.Next() {
+		var c Category
+		if err := rows.Scan(&c.ID, &c.Name, &c.Active, &c.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+
+	return out, rows.Err()
+}
+
+func (r *Repo) IsCategoryLinkedToWarehouse(ctx context.Context, warehouseID, categoryID int64) (bool, error) {
+	var exists bool
+	err := r.pool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM warehouse_material_categories
+			WHERE warehouse_id = $1 AND category_id = $2
+		)
+	`, warehouseID, categoryID).Scan(&exists)
+
+	return exists, err
+}
+
+func (r *Repo) LinkCategoryToWarehouse(ctx context.Context, warehouseID, categoryID int64) error {
+	_, err := r.pool.Exec(ctx, `
+		INSERT INTO warehouse_material_categories (warehouse_id, category_id)
+		VALUES ($1, $2)
+		ON CONFLICT (warehouse_id, category_id) DO NOTHING
+	`, warehouseID, categoryID)
+
+	return err
+}
+
+func (r *Repo) UnlinkCategoryFromWarehouse(ctx context.Context, warehouseID, categoryID int64) error {
+	_, err := r.pool.Exec(ctx, `
+		DELETE FROM warehouse_material_categories
+		WHERE warehouse_id = $1 AND category_id = $2
+	`, warehouseID, categoryID)
+
+	return err
+}
