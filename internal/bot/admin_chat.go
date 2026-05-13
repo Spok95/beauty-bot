@@ -1,0 +1,225 @@
+package bot
+
+import (
+	"context"
+	"fmt"
+	"strings"
+
+	"github.com/Spok95/beauty-bot/internal/domain/adminchat"
+	"github.com/Spok95/beauty-bot/internal/domain/users"
+	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+)
+
+func (b *Bot) handleAdminChatMessage(ctx context.Context, msg *tgbotapi.Message) {
+	chatID := msg.Chat.ID
+	tgID := msg.From.ID
+
+	if len(b.adminIDs) == 0 {
+		b.send(tgbotapi.NewMessage(chatID,
+			"Админ-чат не настроен. Сообщение не отправлено."))
+		return
+	}
+
+	u, _ := b.users.GetByTelegramID(ctx, tgID)
+	if u == nil || u.Status != users.StatusApproved {
+		b.send(tgbotapi.NewMessage(chatID, "Нет доступа к чату."))
+		return
+	}
+
+	in := buildAdminChatInput(msg, u)
+
+	stored, err := b.adminChatRepo.Create(ctx, in)
+	if err != nil {
+		b.log.Error("failed to store admin chat message", "err", err)
+		b.send(tgbotapi.NewMessage(chatID,
+			"Не удалось сохранить сообщение. Попробуйте позже."))
+		return
+	}
+
+	recipients := b.adminChatRecipients(msg.Chat.ID)
+	if len(recipients) == 0 {
+		b.send(tgbotapi.NewMessage(chatID,
+			"Сообщение сохранено, но нет других администраторов для пересылки."))
+		return
+	}
+
+	header := b.adminChatHeader(stored, u)
+
+	for _, adminID := range recipients {
+		b.send(tgbotapi.NewMessage(adminID, header))
+		b.sendAdminChatPayload(adminID, stored)
+	}
+
+	doneMsg := tgbotapi.NewMessage(chatID,
+		fmt.Sprintf("Сообщение сохранено и отправлено администраторам. ID: #%d\n\nМожно отправить следующее сообщение или нажать «Отменить».", stored.ID))
+	doneMsg.ReplyMarkup = adminChatCancelKeyboard()
+	b.send(doneMsg)
+}
+
+func buildAdminChatInput(msg *tgbotapi.Message, u *users.User) adminchat.CreateMessageInput {
+	in := adminchat.CreateMessageInput{
+		SenderUserID:         u.ID,
+		SenderTelegramID:     msg.From.ID,
+		SenderUsername:       strings.TrimSpace(u.Username),
+		SenderRole:           string(u.Role),
+		MessageType:          "text",
+		Text:                 strings.TrimSpace(msg.Text),
+		TelegramMessageID:    int64(msg.MessageID),
+		TelegramMediaGroupID: msg.MediaGroupID,
+	}
+
+	if msg.From.UserName != "" {
+		in.SenderUsername = strings.TrimSpace(in.SenderUsername)
+	}
+
+	switch {
+	case msg.Document != nil:
+		in.MessageType = "document"
+		in.Caption = strings.TrimSpace(msg.Caption)
+		in.TelegramFileID = msg.Document.FileID
+		in.TelegramFileUniqueID = msg.Document.FileUniqueID
+		in.FileName = msg.Document.FileName
+		in.MimeType = msg.Document.MimeType
+		in.FileSize = int64(msg.Document.FileSize)
+
+	case len(msg.Photo) > 0:
+		photo := msg.Photo[len(msg.Photo)-1]
+		in.MessageType = "photo"
+		in.Caption = strings.TrimSpace(msg.Caption)
+		in.TelegramFileID = photo.FileID
+		in.TelegramFileUniqueID = photo.FileUniqueID
+		in.FileSize = int64(photo.FileSize)
+
+	case msg.Video != nil:
+		in.MessageType = "video"
+		in.Caption = strings.TrimSpace(msg.Caption)
+		in.TelegramFileID = msg.Video.FileID
+		in.TelegramFileUniqueID = msg.Video.FileUniqueID
+		in.MimeType = msg.Video.MimeType
+		in.FileSize = int64(msg.Video.FileSize)
+
+	case msg.Audio != nil:
+		in.MessageType = "audio"
+		in.Caption = strings.TrimSpace(msg.Caption)
+		in.TelegramFileID = msg.Audio.FileID
+		in.TelegramFileUniqueID = msg.Audio.FileUniqueID
+		in.MimeType = msg.Audio.MimeType
+		in.FileSize = int64(msg.Audio.FileSize)
+
+	case msg.Voice != nil:
+		in.MessageType = "voice"
+		in.TelegramFileID = msg.Voice.FileID
+		in.TelegramFileUniqueID = msg.Voice.FileUniqueID
+		in.MimeType = msg.Voice.MimeType
+		in.FileSize = int64(msg.Voice.FileSize)
+	}
+
+	return in
+}
+
+func (b *Bot) adminChatRecipients(senderChatID int64) []int64 {
+	out := make([]int64, 0, len(b.adminIDs))
+
+	for adminID := range b.adminIDs {
+		if adminID == senderChatID {
+			continue
+		}
+		out = append(out, adminID)
+	}
+
+	return out
+}
+
+func (b *Bot) adminChatHeader(m *adminchat.Message, u *users.User) string {
+	role := roleLabel(users.Role(m.SenderRole))
+
+	if role == "" {
+		role = "Пользователь"
+	}
+
+	name := strings.TrimSpace(m.SenderUsername)
+	if name == "" && u != nil {
+		name = strings.TrimSpace(u.Username)
+	}
+
+	if name == "" {
+		name = fmt.Sprintf("id %d", m.SenderTelegramID)
+	}
+
+	return fmt.Sprintf(
+		"💬 Админ-чат #%d\nОт: %s\nРоль: %s\nTelegram ID: %d\nТип: %s",
+		m.ID,
+		name,
+		role,
+		m.SenderTelegramID,
+		adminChatMessageTypeLabel(m.MessageType),
+	)
+}
+
+func adminChatMessageTypeLabel(t string) string {
+	switch t {
+	case "text":
+		return "текст"
+	case "document":
+		return "файл"
+	case "photo":
+		return "фото"
+	case "video":
+		return "видео"
+	case "audio":
+		return "аудио"
+	case "voice":
+		return "голосовое"
+	default:
+		return t
+	}
+}
+
+func (b *Bot) sendAdminChatPayload(chatID int64, m *adminchat.Message) {
+	switch m.MessageType {
+	case "document":
+		doc := tgbotapi.NewDocument(chatID, tgbotapi.FileID(m.TelegramFileID))
+		if m.Caption != "" {
+			doc.Caption = m.Caption
+		}
+		b.send(doc)
+
+	case "photo":
+		photo := tgbotapi.NewPhoto(chatID, tgbotapi.FileID(m.TelegramFileID))
+		if m.Caption != "" {
+			photo.Caption = m.Caption
+		}
+		b.send(photo)
+
+	case "video":
+		video := tgbotapi.NewVideo(chatID, tgbotapi.FileID(m.TelegramFileID))
+		if m.Caption != "" {
+			video.Caption = m.Caption
+		}
+		b.send(video)
+
+	case "audio":
+		audio := tgbotapi.NewAudio(chatID, tgbotapi.FileID(m.TelegramFileID))
+		if m.Caption != "" {
+			audio.Caption = m.Caption
+		}
+		b.send(audio)
+
+	case "voice":
+		voice := tgbotapi.NewVoice(chatID, tgbotapi.FileID(m.TelegramFileID))
+		b.send(voice)
+
+	default:
+		if m.Text != "" {
+			b.send(tgbotapi.NewMessage(chatID, m.Text))
+		}
+	}
+}
+
+func adminChatCancelKeyboard() tgbotapi.InlineKeyboardMarkup {
+	return tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("✖️ Отменить", "nav:cancel"),
+		),
+	)
+}

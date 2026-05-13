@@ -12,6 +12,7 @@ import (
 	"github.com/Spok95/beauty-bot/internal/bot"
 	"github.com/Spok95/beauty-bot/internal/config"
 	"github.com/Spok95/beauty-bot/internal/dialog"
+	"github.com/Spok95/beauty-bot/internal/domain/adminchat"
 	"github.com/Spok95/beauty-bot/internal/domain/brands"
 	"github.com/Spok95/beauty-bot/internal/domain/catalog"
 	"github.com/Spok95/beauty-bot/internal/domain/consumption"
@@ -94,6 +95,7 @@ func main() {
 	log.Info("db connected")
 
 	usersRepo := users.NewRepo(pool)
+	adminChatRepo := adminchat.NewRepo(pool)
 	stateRepo := dialog.NewRepo(pool)
 	catalogRepo := catalog.NewRepo(pool)
 	materialsRepo := materials.NewRepo(pool)
@@ -128,7 +130,7 @@ func main() {
 		api.Debug = true
 	}
 
-	tg := bot.New(api, log, usersRepo, stateRepo, cfg.Telegram.AdminChatID, adminIDs, catalogRepo, materialsRepo, brandRepo, inventoryRepo, consRepo, subsRepo, paymentsSvc)
+	tg := bot.New(api, log, usersRepo, stateRepo, adminChatRepo, cfg.Telegram.AdminChatID, adminIDs, catalogRepo, materialsRepo, brandRepo, inventoryRepo, consRepo, subsRepo, paymentsSvc)
 
 	go func() {
 		if err := tg.Run(ctx, cfg.Telegram.RequestTimeoutSec); err != nil {

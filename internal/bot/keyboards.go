@@ -67,6 +67,7 @@ func adminReplyKeyboard() tgbotapi.ReplyKeyboardMarkup {
 			{tgbotapi.NewKeyboardButton("Установка цен"), tgbotapi.NewKeyboardButton("Установка тарифов")},
 			{tgbotapi.NewKeyboardButton("Аренда и Расходы материалов по мастерам")},
 			{tgbotapi.NewKeyboardButton("Оповещение всем")},
+			{tgbotapi.NewKeyboardButton("Чат с админом")},
 			{tgbotapi.NewKeyboardButton("Сменить роль")},
 		},
 	}
