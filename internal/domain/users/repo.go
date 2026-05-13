@@ -13,9 +13,10 @@ func NewRepo(pool *pgxpool.Pool) *Repo { return &Repo{pool: pool} }
 
 func (r *Repo) GetByTelegramID(ctx context.Context, tgID int64) (*User, error) {
 	row := r.pool.QueryRow(ctx, `
-		SELECT id, telegram_id, COALESCE(username, ''), role, status, created_at, updated_at
+		SELECT id, telegram_id, COALESCE(username, ''), active_role, status, created_at, updated_at
 		FROM users WHERE telegram_id = $1
 	`, tgID)
+
 	var u User
 	if err := row.Scan(&u.ID, &u.TelegramID, &u.Username, &u.Role, &u.Status, &u.CreatedAt, &u.UpdatedAt); err != nil {
 		if err == pgx.ErrNoRows {
@@ -23,22 +24,34 @@ func (r *Repo) GetByTelegramID(ctx context.Context, tgID int64) (*User, error) {
 		}
 		return nil, err
 	}
+
+	roles, _ := r.ListRoles(ctx, u.ID)
+	u.Roles = roles
+	u.ActiveRole = u.Role
+
 	return &u, nil
 }
 
 func (r *Repo) UpsertByTelegram(ctx context.Context, tgID int64, defaultRole Role) (*User, error) {
 	row := r.pool.QueryRow(ctx, `
-		INSERT INTO users (telegram_id, role)
-		VALUES ($1,$2)
+		INSERT INTO users (telegram_id, role, active_role)
+		VALUES ($1, $2, $2)
 		ON CONFLICT (telegram_id) DO UPDATE SET
-			role       = CASE WHEN users.role = 'admin' THEN users.role ELSE EXCLUDED.role END,
 			updated_at = now()
-		RETURNING id, telegram_id, COALESCE(username, ''), role, status, created_at, updated_at
+		RETURNING id, telegram_id, COALESCE(username, ''), active_role, status, created_at, updated_at
 	`, tgID, defaultRole)
+
 	var u User
 	if err := row.Scan(&u.ID, &u.TelegramID, &u.Username, &u.Role, &u.Status, &u.CreatedAt, &u.UpdatedAt); err != nil {
 		return nil, err
 	}
+
+	_ = r.AddRole(ctx, u.ID, u.Role)
+
+	roles, _ := r.ListRoles(ctx, u.ID)
+	u.Roles = roles
+	u.ActiveRole = u.Role
+
 	return &u, nil
 }
 
@@ -47,26 +60,39 @@ func (r *Repo) SetFIO(ctx context.Context, tgID int64, fio string) (*User, error
 		UPDATE users
 		SET username = $2, updated_at = now()
 		WHERE telegram_id = $1
-		RETURNING id, telegram_id, COALESCE(username, ''), role, status, created_at, updated_at
+		RETURNING id, telegram_id, COALESCE(username, ''), active_role, status, created_at, updated_at
 	`, tgID, fio)
 	var u User
 	if err := row.Scan(&u.ID, &u.TelegramID, &u.Username, &u.Role, &u.Status, &u.CreatedAt, &u.UpdatedAt); err != nil {
 		return nil, err
 	}
+	roles, _ := r.ListRoles(ctx, u.ID)
+	u.Roles = roles
+	u.ActiveRole = u.Role
 	return &u, nil
 }
 
 func (r *Repo) Approve(ctx context.Context, tgID int64, role Role) (*User, error) {
 	row := r.pool.QueryRow(ctx, `
 		UPDATE users
-		SET role = $2, status = 'approved', updated_at = now()
+		SET role = $2, active_role = $2, status = 'approved', updated_at = now()
 		WHERE telegram_id = $1
-		RETURNING id, telegram_id, COALESCE(username, ''), role, status, created_at, updated_at
+		RETURNING id, telegram_id, COALESCE(username, ''), active_role, status, created_at, updated_at
 	`, tgID, role)
+
 	var u User
 	if err := row.Scan(&u.ID, &u.TelegramID, &u.Username, &u.Role, &u.Status, &u.CreatedAt, &u.UpdatedAt); err != nil {
 		return nil, err
 	}
+
+	if err := r.AddRole(ctx, u.ID, role); err != nil {
+		return nil, err
+	}
+
+	roles, _ := r.ListRoles(ctx, u.ID)
+	u.Roles = roles
+	u.ActiveRole = u.Role
+
 	return &u, nil
 }
 
@@ -75,7 +101,7 @@ func (r *Repo) Reject(ctx context.Context, tgID int64) (*User, error) {
 		UPDATE users
 		SET status = 'rejected', updated_at = now()
 		WHERE telegram_id = $1
-		RETURNING id, telegram_id, COALESCE(username, ''), role, status, created_at, updated_at
+		RETURNING id, telegram_id, COALESCE(username, ''), active_role, status, created_at, updated_at
 	`, tgID)
 	var u User
 	if err := row.Scan(&u.ID, &u.TelegramID, &u.Username, &u.Role, &u.Status, &u.CreatedAt, &u.UpdatedAt); err != nil {
@@ -87,9 +113,11 @@ func (r *Repo) Reject(ctx context.Context, tgID int64) (*User, error) {
 // ListByRole возвращает всех пользователей с заданной ролью и статусом.
 func (r *Repo) ListByRole(ctx context.Context, role Role, status Status) ([]*User, error) {
 	rows, err := r.pool.Query(ctx, `
-		SELECT id, telegram_id, username, role, status, created_at, updated_at
-		FROM users
-		WHERE role = $1 AND status = $2
+		SELECT u.id, u.telegram_id, COALESCE(u.username, ''), u.active_role, u.status, u.created_at, u.updated_at
+		FROM users u
+		INNER JOIN user_roles ur ON ur.user_id = u.id
+		WHERE ur.role = $1 AND u.status = $2
+		ORDER BY u.username, u.telegram_id
 	`, role, status)
 	if err != nil {
 		return nil, err
@@ -104,17 +132,24 @@ func (r *Repo) ListByRole(ctx context.Context, role Role, status Status) ([]*Use
 		); err != nil {
 			return nil, err
 		}
+
+		roles, _ := r.ListRoles(ctx, u.ID)
+		u.Roles = roles
+		u.ActiveRole = u.Role
+
 		out = append(out, &u)
 	}
+
 	if rows.Err() != nil {
 		return nil, rows.Err()
 	}
+
 	return out, nil
 }
 
 func (r *Repo) GetByID(ctx context.Context, id int64) (*User, error) {
 	row := r.pool.QueryRow(ctx, `
-		SELECT id, telegram_id, COALESCE(username, ''), role, status, created_at, updated_at
+		SELECT id, telegram_id, COALESCE(username, ''), active_role, status, created_at, updated_at
 		FROM users
 		WHERE id = $1
 	`, id)
@@ -125,6 +160,9 @@ func (r *Repo) GetByID(ctx context.Context, id int64) (*User, error) {
 		}
 		return nil, err
 	}
+	roles, _ := r.ListRoles(ctx, u.ID)
+	u.Roles = roles
+	u.ActiveRole = u.Role
 	return &u, nil
 }
 
@@ -148,4 +186,54 @@ func (r *Repo) ListApprovedTelegramIDs(ctx context.Context) ([]int64, error) {
 		res = append(res, id)
 	}
 	return res, rows.Err()
+}
+
+func (r *Repo) ListRoles(ctx context.Context, userID int64) ([]Role, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT role
+		FROM user_roles
+		WHERE user_id = $1
+		ORDER BY role
+	`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []Role
+
+	for rows.Next() {
+		var role Role
+		if err := rows.Scan(&role); err != nil {
+			return nil, err
+		}
+		out = append(out, role)
+	}
+
+	return out, rows.Err()
+}
+
+func (r *Repo) AddRole(ctx context.Context, userID int64, role Role) error {
+	_, err := r.pool.Exec(ctx, `
+		INSERT INTO user_roles (user_id, role)
+		VALUES ($1, $2)
+		ON CONFLICT (user_id, role) DO NOTHING
+	`, userID, role)
+
+	return err
+}
+
+func (r *Repo) SetActiveRole(ctx context.Context, userID int64, role Role) error {
+	_, err := r.pool.Exec(ctx, `
+		UPDATE users
+		SET active_role = $2, updated_at = now()
+		WHERE id = $1
+		  AND EXISTS (
+			  SELECT 1
+			  FROM user_roles
+			  WHERE user_id = $1 AND role = $2
+		  )
+	`, userID, role)
+
+	return err
 }

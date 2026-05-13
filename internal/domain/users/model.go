@@ -23,6 +23,8 @@ type User struct {
 	TelegramID int64
 	Username   string
 	Role       Role
+	ActiveRole Role
+	Roles      []Role
 	Status     Status
 	CreatedAt  time.Time
 	UpdatedAt  time.Time

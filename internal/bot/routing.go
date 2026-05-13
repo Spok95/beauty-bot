@@ -25,7 +25,6 @@ func (b *Bot) handleCommand(ctx context.Context, msg *tgbotapi.Message) {
 	tgID := msg.From.ID
 	switch msg.Command() {
 	case "start":
-		// не затираем роль, если пользователь уже существует
 		existing, _ := b.users.GetByTelegramID(ctx, tgID)
 
 		defaultRole := users.RoleMaster
@@ -38,48 +37,37 @@ func (b *Bot) handleCommand(ctx context.Context, msg *tgbotapi.Message) {
 			b.send(tgbotapi.NewMessage(chatID, "Ошибка: не удалось сохранить профиль"))
 			return
 		}
+
 		// авто-админ
 		if b.isAdminID(msg.From.ID) && (u.Role != users.RoleAdmin || u.Status != users.StatusApproved) {
-			if _, err2 := b.users.Approve(ctx, msg.From.ID, users.RoleAdmin); err2 == nil {
-				m := tgbotapi.NewMessage(chatID, "Привет, админ! Для управления ботом, ты можешь воспользоваться меню с кнопками и работать через них.")
-				m.ReplyMarkup = adminReplyKeyboard()
-				b.send(m)
-				return
+			if approved, err2 := b.users.Approve(ctx, msg.From.ID, users.RoleAdmin); err2 == nil {
+				u = approved
 			}
 		}
 
-		if u.Role == users.RoleAdmin && u.Status == users.StatusApproved {
-			m := tgbotapi.NewMessage(chatID, "Привет, админ! Для управления ботом, ты можешь воспользоваться меню с кнопками и работать через них.")
-			m.ReplyMarkup = adminReplyKeyboard()
-			b.send(m)
-			return
-		}
+		if u.Status == users.StatusApproved {
+			roles, _ := b.users.ListRoles(ctx, u.ID)
+			u.Roles = roles
 
-		if u.Role == users.RoleMaster && u.Status == users.StatusApproved {
-			m := tgbotapi.NewMessage(chatID, "Готово! Для учёта материалов и аренды жми «Расход/Аренда».")
-			m.ReplyMarkup = masterReplyKeyboard()
-			b.send(m)
-			return
-		}
+			if len(u.Roles) > 1 {
+				b.showRolePicker(chatID, u.Roles)
+				return
+			}
 
-		if u.Role == users.RoleAdministrator && u.Status == users.StatusApproved {
-			m := tgbotapi.NewMessage(chatID,
-				"Готово! Для работы со складом «Клиентский» используйте кнопки снизу.")
-			m.ReplyMarkup = salonAdminReplyKeyboard()
-			b.send(m)
+			b.sendMenuForRole(chatID, u.Role)
 			return
 		}
 
 		switch u.Status {
-		case users.StatusApproved:
-			b.send(tgbotapi.NewMessage(chatID, "Вы уже подтверждены."))
 		case users.StatusRejected:
 			_ = b.states.Set(ctx, chatID, dialog.StateAwaitFIO, dialog.Payload{})
 			b.askFIO(chatID)
+
 		default:
 			_ = b.states.Set(ctx, chatID, dialog.StateAwaitFIO, dialog.Payload{})
 			b.askFIO(chatID)
 		}
+
 		return
 
 	case "help":
@@ -137,6 +125,22 @@ func (b *Bot) handleStateMessage(ctx context.Context, msg *tgbotapi.Message) {
 			return
 		}
 		b.showConsumptionWarehousePick(ctx, chatID, nil, u)
+		return
+	}
+
+	if msg.Text == "Сменить роль" {
+		u, _ := b.users.GetByTelegramID(ctx, tgID)
+		if u == nil || u.Status != users.StatusApproved {
+			return
+		}
+
+		roles, _ := b.users.ListRoles(ctx, u.ID)
+		if len(roles) <= 1 {
+			b.send(tgbotapi.NewMessage(chatID, "У вас только одна роль."))
+			return
+		}
+
+		b.showRolePicker(chatID, roles)
 		return
 	}
 
@@ -1806,6 +1810,45 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 	}
 
 	switch {
+	case strings.HasPrefix(data, "role:switch:"):
+		role := users.Role(strings.TrimPrefix(data, "role:switch:"))
+
+		u, err := b.users.GetByTelegramID(ctx, cb.From.ID)
+		if err != nil || u == nil || u.Status != users.StatusApproved {
+			_ = b.answerCallback(cb, "Пользователь не найден", true)
+			return
+		}
+
+		roles, _ := b.users.ListRoles(ctx, u.ID)
+
+		allowed := false
+		for _, r := range roles {
+			if r == role {
+				allowed = true
+				break
+			}
+		}
+
+		if !allowed {
+			_ = b.answerCallback(cb, "Роль недоступна", true)
+			return
+		}
+
+		if err := b.users.SetActiveRole(ctx, u.ID, role); err != nil {
+			_ = b.answerCallback(cb, "Ошибка смены роли", true)
+			return
+		}
+
+		_ = b.states.Reset(ctx, fromChat)
+
+		b.editTextAndClear(fromChat, cb.Message.MessageID,
+			fmt.Sprintf("Активная роль: %s", roleLabel(role)))
+
+		b.sendMenuForRole(fromChat, role)
+
+		_ = b.answerCallback(cb, "Роль переключена", false)
+		return
+
 	case strings.HasPrefix(data, "role:"):
 		roleStr := strings.TrimPrefix(data, "role:")
 		var role users.Role
