@@ -19,6 +19,10 @@ func (r *Repo) Create(ctx context.Context, in CreateMessageInput) (*Message, err
 	if in.SenderUserID > 0 {
 		senderUserID = in.SenderUserID
 	}
+	var replyToMessageID any
+	if in.ReplyToMessageID > 0 {
+		replyToMessageID = in.ReplyToMessageID
+	}
 
 	row := r.pool.QueryRow(ctx, `
 		INSERT INTO admin_chat_messages (
@@ -35,13 +39,14 @@ func (r *Repo) Create(ctx context.Context, in CreateMessageInput) (*Message, err
 			mime_type,
 			file_size,
 			telegram_message_id,
-			telegram_media_group_id
+		    telegram_media_group_id,
+		    reply_to_message_id
 		)
 		VALUES (
 			$1, $2, $3, $4,
 			$5, $6, $7,
 			$8, $9, $10, $11, $12,
-			$13, $14
+			$13, $14, $15
 		)
 		RETURNING
 			id,
@@ -59,6 +64,7 @@ func (r *Repo) Create(ctx context.Context, in CreateMessageInput) (*Message, err
 			file_size,
 			telegram_message_id,
 			telegram_media_group_id,
+			COALESCE(reply_to_message_id, 0),
 			created_at
 	`,
 		senderUserID,
@@ -75,6 +81,7 @@ func (r *Repo) Create(ctx context.Context, in CreateMessageInput) (*Message, err
 		in.FileSize,
 		in.TelegramMessageID,
 		in.TelegramMediaGroupID,
+		replyToMessageID,
 	)
 
 	var m Message
@@ -94,6 +101,7 @@ func (r *Repo) Create(ctx context.Context, in CreateMessageInput) (*Message, err
 		&m.FileSize,
 		&m.TelegramMessageID,
 		&m.TelegramMediaGroupID,
+		&m.ReplyToMessageID,
 		&m.CreatedAt,
 	); err != nil {
 		return nil, err
@@ -160,4 +168,55 @@ func (r *Repo) Last(ctx context.Context, limit, offset int) ([]Message, error) {
 	}
 
 	return out, rows.Err()
+}
+
+func (r *Repo) GetByID(ctx context.Context, id int64) (*Message, error) {
+	row := r.pool.QueryRow(ctx, `
+		SELECT
+			id,
+			COALESCE(sender_user_id, 0),
+			sender_telegram_id,
+			sender_username,
+			sender_role,
+			message_type,
+			text,
+			caption,
+			telegram_file_id,
+			telegram_file_unique_id,
+			file_name,
+			mime_type,
+			file_size,
+			telegram_message_id,
+			telegram_media_group_id,
+			COALESCE(reply_to_message_id, 0),
+			created_at
+		FROM admin_chat_messages
+		WHERE id = $1
+	`, id)
+
+	var m Message
+
+	if err := row.Scan(
+		&m.ID,
+		&m.SenderUserID,
+		&m.SenderTelegramID,
+		&m.SenderUsername,
+		&m.SenderRole,
+		&m.MessageType,
+		&m.Text,
+		&m.Caption,
+		&m.TelegramFileID,
+		&m.TelegramFileUniqueID,
+		&m.FileName,
+		&m.MimeType,
+		&m.FileSize,
+		&m.TelegramMessageID,
+		&m.TelegramMediaGroupID,
+		&m.ReplyToMessageID,
+		&m.CreatedAt,
+	); err != nil {
+		return nil, err
+	}
+
+	return &m, nil
 }

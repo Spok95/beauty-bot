@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/Spok95/beauty-bot/internal/dialog"
 	"github.com/Spok95/beauty-bot/internal/domain/adminchat"
 	"github.com/Spok95/beauty-bot/internal/domain/users"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -28,12 +29,31 @@ func (b *Bot) handleAdminChatMessage(ctx context.Context, msg *tgbotapi.Message)
 
 	in := buildAdminChatInput(msg, u)
 
+	st, _ := b.states.Get(ctx, chatID)
+
+	if st.Payload != nil {
+		if rawReplyID, ok := st.Payload["reply_to_admin_chat_message_id"]; ok {
+			switch v := rawReplyID.(type) {
+			case int64:
+				in.ReplyToMessageID = v
+
+			case float64:
+				in.ReplyToMessageID = int64(v)
+			}
+		}
+	}
+
 	stored, err := b.adminChatRepo.Create(ctx, in)
 	if err != nil {
 		b.log.Error("failed to store admin chat message", "err", err)
 		b.send(tgbotapi.NewMessage(chatID,
 			"Не удалось сохранить сообщение. Попробуйте позже."))
 		return
+	}
+
+	if st.Payload != nil {
+		delete(st.Payload, "reply_to_admin_chat_message_id")
+		_ = b.states.Set(ctx, chatID, dialog.StateChatAdmin, st.Payload)
 	}
 
 	recipients := b.adminChatRecipients(msg.Chat.ID)
@@ -146,9 +166,16 @@ func (b *Bot) adminChatHeader(m *adminchat.Message, u *users.User) string {
 		name = fmt.Sprintf("id %d", m.SenderTelegramID)
 	}
 
+	replyPart := ""
+
+	if m.ReplyToMessageID > 0 {
+		replyPart = fmt.Sprintf("\nОтвет на сообщение: #%d", m.ReplyToMessageID)
+	}
+
 	return fmt.Sprintf(
-		"💬 Админ-чат #%d\nОт: %s\nРоль: %s\nTelegram ID: %d\nТип: %s",
+		"💬 Админ-чат #%d%s\nОт: %s\nРоль: %s\nTelegram ID: %d\nТип: %s",
 		m.ID,
+		replyPart,
 		name,
 		role,
 		m.SenderTelegramID,
