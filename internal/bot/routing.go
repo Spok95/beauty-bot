@@ -233,8 +233,12 @@ func (b *Bot) handleStateMessage(ctx context.Context, msg *tgbotapi.Message) {
 		}
 
 		_ = b.states.Set(ctx, chatID, dialog.StateChatAdmin, dialog.Payload{})
+
+		kb := adminChatCancelKeyboard()
+
 		m := tgbotapi.NewMessage(chatID,
-			"Отправьте сообщение или файл для админов одним сообщением. Оно будет переслано в админский чат.")
+			"Админ-чат открыт.\n\nОтправляйте сообщения, фото или файлы. Они будут сохранены и пересланы администраторам.\n\nДля выхода нажмите «Отменить».")
+		m.ReplyMarkup = kb
 		b.send(m)
 		return
 	}
@@ -405,97 +409,7 @@ func (b *Bot) handleStateMessage(ctx context.Context, msg *tgbotapi.Message) {
 		return
 
 	case dialog.StateChatAdmin:
-		if len(b.adminIDs) == 0 {
-			b.send(tgbotapi.NewMessage(chatID,
-				"Админ-чат не настроен. Сообщение не отправлено."))
-			_ = b.states.Reset(ctx, chatID)
-			return
-		}
-
-		u, _ := b.users.GetByTelegramID(ctx, tgID)
-
-		roleLabel := "пользователь"
-		if u != nil {
-			switch u.Role {
-			case users.RoleMaster:
-				roleLabel = "мастер"
-			case users.RoleAdmin, users.RoleAdministrator:
-				roleLabel = "администратор"
-			}
-		}
-
-		fio := ""
-		if u != nil {
-			fio = strings.TrimSpace(u.Username)
-		}
-
-		header := fmt.Sprintf("Сообщение в чат админов от %s", roleLabel)
-		if fio != "" {
-			header += " " + fio
-		}
-		if msg.From.UserName != "" {
-			header += fmt.Sprintf(" (@%s)", msg.From.UserName)
-		}
-		header += ":"
-
-		for adminID := range b.adminIDs {
-			// сначала шапка
-			b.send(tgbotapi.NewMessage(adminID, header))
-
-			// дальше отправляем содержимое
-			switch {
-			case msg.Document != nil:
-				caption := strings.TrimSpace(msg.Caption)
-				doc := tgbotapi.NewDocument(adminID,
-					tgbotapi.FileID(msg.Document.FileID))
-				if caption != "" {
-					doc.Caption = caption
-				}
-				b.send(doc)
-
-			case len(msg.Photo) > 0:
-				photo := msg.Photo[len(msg.Photo)-1]
-				caption := strings.TrimSpace(msg.Caption)
-				p := tgbotapi.NewPhoto(adminID,
-					tgbotapi.FileID(photo.FileID))
-				if caption != "" {
-					p.Caption = caption
-				}
-				b.send(p)
-
-			case msg.Video != nil:
-				caption := strings.TrimSpace(msg.Caption)
-				v := tgbotapi.NewVideo(adminID,
-					tgbotapi.FileID(msg.Video.FileID))
-				if caption != "" {
-					v.Caption = caption
-				}
-				b.send(v)
-
-			case msg.Audio != nil:
-				caption := strings.TrimSpace(msg.Caption)
-				a := tgbotapi.NewAudio(adminID,
-					tgbotapi.FileID(msg.Audio.FileID))
-				if caption != "" {
-					a.Caption = caption
-				}
-				b.send(a)
-
-			case msg.Voice != nil:
-				v := tgbotapi.NewVoice(adminID,
-					tgbotapi.FileID(msg.Voice.FileID))
-				b.send(v)
-
-			default:
-				text := strings.TrimSpace(msg.Text)
-				if text != "" {
-					b.send(tgbotapi.NewMessage(adminID, text))
-				}
-			}
-		}
-
-		b.send(tgbotapi.NewMessage(chatID, "Сообщение отправлено администраторам."))
-		_ = b.states.Reset(ctx, chatID)
+		b.handleAdminChatMessage(ctx, msg)
 		return
 
 	case dialog.StateAdmWhName:

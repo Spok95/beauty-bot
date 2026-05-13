@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 
+	"github.com/Spok95/beauty-bot/internal/domain/adminchat"
 	"github.com/Spok95/beauty-bot/internal/domain/brands"
 	"github.com/Spok95/beauty-bot/internal/domain/consumption"
 	"github.com/Spok95/beauty-bot/internal/domain/inventory"
@@ -21,23 +22,25 @@ const lowStockThresholdGr = 20.0
 const lowStockThresholdPcs = 1.0
 
 type Bot struct {
-	api       *tgbotapi.BotAPI
-	log       *slog.Logger
-	users     *users.Repo
-	states    *dialog.Repo
-	adminChat int64
-	adminIDs  map[int64]struct{}
-	catalog   *catalog.Repo
-	materials *materials.Repo
-	brands    *brands.Repo
-	inventory *inventory.Repo
-	cons      *consumption.Repo
-	subs      *subsdomain.Repo
-	payments  *payments.Service
+	api           *tgbotapi.BotAPI
+	log           *slog.Logger
+	users         *users.Repo
+	states        *dialog.Repo
+	adminChatRepo *adminchat.Repo
+	adminChat     int64
+	adminIDs      map[int64]struct{}
+	catalog       *catalog.Repo
+	materials     *materials.Repo
+	brands        *brands.Repo
+	inventory     *inventory.Repo
+	cons          *consumption.Repo
+	subs          *subsdomain.Repo
+	payments      *payments.Service
 }
 
 func New(api *tgbotapi.BotAPI, log *slog.Logger,
 	usersRepo *users.Repo, statesRepo *dialog.Repo,
+	adminChatRepo *adminchat.Repo,
 	adminChatID int64, adminIDs []int64,
 	catalogRepo *catalog.Repo,
 	materialsRepo *materials.Repo, brandsRepo *brands.Repo,
@@ -59,7 +62,8 @@ func New(api *tgbotapi.BotAPI, log *slog.Logger,
 
 	return &Bot{
 		api: api, log: log, users: usersRepo, states: statesRepo,
-		adminChat: adminChatID, adminIDs: adminMap,
+		adminChatRepo: adminChatRepo,
+		adminChat:     adminChatID, adminIDs: adminMap,
 		catalog:   catalogRepo,
 		materials: materialsRepo, brands: brandsRepo,
 		inventory: inventoryRepo,
