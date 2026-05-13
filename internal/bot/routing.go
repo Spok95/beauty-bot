@@ -243,6 +243,22 @@ func (b *Bot) handleStateMessage(ctx context.Context, msg *tgbotapi.Message) {
 		return
 	}
 
+	if msg.Text == "История чата" {
+		u, _ := b.users.GetByTelegramID(ctx, tgID)
+		if u == nil || u.Status != users.StatusApproved {
+			return
+		}
+
+		if u.Role != users.RoleAdmin && u.Role != users.RoleAdministrator {
+			b.send(tgbotapi.NewMessage(chatID,
+				"История чата доступна только администраторам."))
+			return
+		}
+
+		b.showAdminChatHistory(ctx, chatID, 0)
+		return
+	}
+
 	// "Список команд" — доступно всем подтверждённым
 	if msg.Text == "Список команд" {
 		u, _ := b.users.GetByTelegramID(ctx, tgID)
@@ -1724,6 +1740,31 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 	}
 
 	switch {
+	case strings.HasPrefix(data, "adminchat:history:"):
+		pageStr := strings.TrimPrefix(data, "adminchat:history:")
+
+		page, err := strconv.Atoi(pageStr)
+		if err != nil {
+			_ = b.answerCallback(cb, "Некорректная страница", true)
+			return
+		}
+
+		u, _ := b.users.GetByTelegramID(ctx, cb.From.ID)
+		if u == nil || u.Status != users.StatusApproved {
+			_ = b.answerCallback(cb, "Нет доступа", true)
+			return
+		}
+
+		if u.Role != users.RoleAdmin && u.Role != users.RoleAdministrator {
+			_ = b.answerCallback(cb, "Недостаточно прав", true)
+			return
+		}
+
+		b.showAdminChatHistory(ctx, fromChat, page)
+
+		_ = b.answerCallback(cb, "История обновлена", false)
+		return
+
 	case strings.HasPrefix(data, "role:switch:"):
 		role := users.Role(strings.TrimPrefix(data, "role:switch:"))
 
