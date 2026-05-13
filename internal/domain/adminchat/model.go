@@ -18,6 +18,7 @@ type Message struct {
 	FileSize             int64
 	TelegramMessageID    int64
 	TelegramMediaGroupID string
+	ReplyToMessageID     int64
 	CreatedAt            time.Time
 }
 
@@ -36,4 +37,5 @@ type CreateMessageInput struct {
 	FileSize             int64
 	TelegramMessageID    int64
 	TelegramMediaGroupID string
+	ReplyToMessageID     int64
 }

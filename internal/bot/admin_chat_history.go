@@ -35,6 +35,7 @@ func (b *Bot) showAdminChatHistory(ctx context.Context, chatID int64, page int) 
 	}
 
 	var lines []string
+	var rows [][]tgbotapi.InlineKeyboardButton
 
 	lines = append(lines,
 		fmt.Sprintf("💬 История админ-чата\nСтраница: %d\n", page+1))
@@ -42,11 +43,18 @@ func (b *Bot) showAdminChatHistory(ctx context.Context, chatID int64, page int) 
 	for _, m := range items {
 		lines = append(lines, formatAdminChatHistoryItem(&m))
 		lines = append(lines, "--------------------")
+
+		rows = append(rows,
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData(
+					fmt.Sprintf("↩️ Ответить #%d", m.ID),
+					fmt.Sprintf("adminchat:reply:%d", m.ID),
+				),
+			),
+		)
 	}
 
 	msg := tgbotapi.NewMessage(chatID, strings.Join(lines, "\n"))
-
-	var rows [][]tgbotapi.InlineKeyboardButton
 
 	navRow := []tgbotapi.InlineKeyboardButton{}
 
@@ -115,10 +123,17 @@ func formatAdminChatHistoryItem(m *adminchat.Message) string {
 		text = text[:300] + "..."
 	}
 
+	replyPart := ""
+
+	if m.ReplyToMessageID > 0 {
+		replyPart = fmt.Sprintf("↩️ Ответ на #%d\n", m.ReplyToMessageID)
+	}
+
 	return fmt.Sprintf(
-		"#%d | %s\nОт: %s\nРоль: %s\nТип: %s\nДата: %s\n\n%s",
+		"#%d | %s\n%sОт: %s\nРоль: %s\nТип: %s\nДата: %s\n\n%s",
 		m.ID,
 		adminChatMessageTypeLabel(m.MessageType),
+		replyPart,
 		name,
 		role,
 		m.MessageType,

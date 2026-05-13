@@ -1765,6 +1765,46 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 		_ = b.answerCallback(cb, "История обновлена", false)
 		return
 
+	case strings.HasPrefix(data, "adminchat:reply:"):
+		msgIDStr := strings.TrimPrefix(data, "adminchat:reply:")
+
+		replyToID, err := strconv.ParseInt(msgIDStr, 10, 64)
+		if err != nil {
+			_ = b.answerCallback(cb, "Некорректный ID", true)
+			return
+		}
+
+		msgReply, err := b.adminChatRepo.GetByID(ctx, replyToID)
+		if err != nil || msgReply == nil {
+			_ = b.answerCallback(cb, "Сообщение не найдено", true)
+			return
+		}
+
+		st, _ := b.states.Get(ctx, fromChat)
+
+		if st.Payload == nil {
+			st.Payload = dialog.Payload{}
+		}
+
+		st.Payload["reply_to_admin_chat_message_id"] = replyToID
+
+		_ = b.states.Set(ctx, fromChat, dialog.StateChatAdmin, st.Payload)
+
+		replyText := fmt.Sprintf(
+			"↩️ Ответ на сообщение #%d\n\nОт: %s\nТип: %s\n\nТеперь отправьте сообщение, фото или файл.",
+			msgReply.ID,
+			strings.TrimSpace(msgReply.SenderUsername),
+			adminChatMessageTypeLabel(msgReply.MessageType),
+		)
+
+		msg := tgbotapi.NewMessage(fromChat, replyText)
+		msg.ReplyMarkup = adminChatCancelKeyboard()
+
+		b.send(msg)
+
+		_ = b.answerCallback(cb, "Режим ответа включён", false)
+		return
+
 	case strings.HasPrefix(data, "role:switch:"):
 		role := users.Role(strings.TrimPrefix(data, "role:switch:"))
 
