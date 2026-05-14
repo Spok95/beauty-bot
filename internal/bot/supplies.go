@@ -153,7 +153,22 @@ func (b *Bot) showSuppliesExportPickWarehouse(ctx context.Context, chatID int64,
 	}
 }
 
-func (b *Bot) showSuppliesPickMaterial(ctx context.Context, chatID int64, editMsgID int, whID int64) {
+func (b *Bot) showSuppliesPickMaterial(
+	ctx context.Context,
+	chatID int64,
+	editMsgID int,
+	page int,
+) {
+	st, _ := b.states.Get(ctx, chatID)
+
+	whRaw, ok := st.Payload["wh_id"]
+	if !ok {
+		b.editTextAndClear(chatID, editMsgID, "Склад не выбран")
+		return
+	}
+
+	whID := int64(whRaw.(float64))
+
 	mats, err := b.materials.ListWithBalanceByWarehouse(ctx, whID)
 	if err != nil {
 		b.editTextAndClear(chatID, editMsgID, "Ошибка загрузки материалов")
@@ -161,24 +176,99 @@ func (b *Bot) showSuppliesPickMaterial(ctx context.Context, chatID int64, editMs
 	}
 
 	if len(mats) == 0 {
-		b.editTextAndClear(chatID, editMsgID, "Для выбранного склада не настроены категории материалов.")
+		b.editTextAndClear(chatID, editMsgID, "Для выбранного склада материалы не найдены.")
 		return
 	}
 
-	rows := [][]tgbotapi.InlineKeyboardButton{}
-	for _, m := range mats {
-		rows = append(rows, tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData(
-				materialDisplayName(m.Brand, m.Name),
-				fmt.Sprintf("sup:mat:%d", m.ID),
-			),
-		))
+	const perPage = 10
+
+	totalPages := (len(mats) + perPage - 1) / perPage
+
+	if page < 0 {
+		page = 0
+	}
+	if page >= totalPages {
+		page = totalPages - 1
 	}
 
-	rows = append(rows, navKeyboard(true, true).InlineKeyboard[0])
+	start := page * perPage
+	end := start + perPage
+
+	if end > len(mats) {
+		end = len(mats)
+	}
+
+	rows := [][]tgbotapi.InlineKeyboardButton{}
+
+	for _, m := range mats[start:end] {
+		rows = append(rows,
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData(
+					materialDisplayName(m.Brand, m.Name),
+					fmt.Sprintf("sup:mat:%d", m.ID),
+				),
+			),
+		)
+	}
+
+	navRow := []tgbotapi.InlineKeyboardButton{}
+
+	if page > 0 {
+		navRow = append(navRow,
+			tgbotapi.NewInlineKeyboardButtonData(
+				"⬅️",
+				fmt.Sprintf("sup:mats:%d", page-1),
+			),
+		)
+	}
+
+	navRow = append(navRow,
+		tgbotapi.NewInlineKeyboardButtonData(
+			fmt.Sprintf("%d/%d", page+1, totalPages),
+			"noop",
+		),
+	)
+
+	if page < totalPages-1 {
+		navRow = append(navRow,
+			tgbotapi.NewInlineKeyboardButtonData(
+				"➡️",
+				fmt.Sprintf("sup:mats:%d", page+1),
+			),
+		)
+	}
+
+	rows = append(rows, navRow)
+
+	rows = append(rows,
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(
+				"⬅️ К складам",
+				"sup:import",
+			),
+			tgbotapi.NewInlineKeyboardButtonData(
+				"✖️ Отменить",
+				"nav:cancel",
+			),
+		),
+	)
 
 	kb := tgbotapi.NewInlineKeyboardMarkup(rows...)
-	b.send(tgbotapi.NewEditMessageTextAndMarkup(chatID, editMsgID, "Выберите материал:", kb))
+
+	text := fmt.Sprintf(
+		"Выберите материал\nСтраница %d из %d",
+		page+1,
+		totalPages,
+	)
+
+	b.send(
+		tgbotapi.NewEditMessageTextAndMarkup(
+			chatID,
+			editMsgID,
+			text,
+			kb,
+		),
+	)
 }
 
 func (b *Bot) handleSuppliesImportExcel(ctx context.Context, chatID int64, u *users.User, data []byte, comment string) {
