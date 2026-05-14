@@ -484,6 +484,18 @@ func (b *Bot) handlePriceMatImportExcel(ctx context.Context, chatID int64, data 
 			return
 		}
 
+		allowed, err := b.materials.IsMaterialAllowedInWarehouse(ctx, warehouseID, matID)
+		if err != nil {
+			b.send(tgbotapi.NewMessage(chatID,
+				fmt.Sprintf("Ошибка проверки материала в строке %d.", i+1)))
+			return
+		}
+		if !allowed {
+			b.send(tgbotapi.NewMessage(chatID,
+				fmt.Sprintf("Ошибка в строке %d: материал %d не относится к категориям склада %d.", i+1, matID, warehouseID)))
+			return
+		}
+
 		if priceStr == "" {
 			// пустая ячейка — оставляем старую цену
 			totalRows++
@@ -656,26 +668,33 @@ func (b *Bot) handleAdmRentMaterialsReport(
 
 		// Таблица с материалами
 		_ = f.SetCellValue(sheetName, fmt.Sprintf("A%d", rowIdx), "Дата")
-		_ = f.SetCellValue(sheetName, fmt.Sprintf("B%d", rowIdx), "Комментарий")
-		_ = f.SetCellValue(sheetName, fmt.Sprintf("C%d", rowIdx), "Бренд")
-		_ = f.SetCellValue(sheetName, fmt.Sprintf("D%d", rowIdx), "Материал")
-		_ = f.SetCellValue(sheetName, fmt.Sprintf("E%d", rowIdx), "Ед.")
-		_ = f.SetCellValue(sheetName, fmt.Sprintf("F%d", rowIdx), "Кол-во")
-		_ = f.SetCellValue(sheetName, fmt.Sprintf("G%d", rowIdx), "Цена за ед.")
-		_ = f.SetCellValue(sheetName, fmt.Sprintf("H%d", rowIdx), "Сумма")
+		_ = f.SetCellValue(sheetName, fmt.Sprintf("B%d", rowIdx), "Склад")
+		_ = f.SetCellValue(sheetName, fmt.Sprintf("C%d", rowIdx), "Комментарий")
+		_ = f.SetCellValue(sheetName, fmt.Sprintf("D%d", rowIdx), "Бренд")
+		_ = f.SetCellValue(sheetName, fmt.Sprintf("E%d", rowIdx), "Материал")
+		_ = f.SetCellValue(sheetName, fmt.Sprintf("F%d", rowIdx), "Ед.")
+		_ = f.SetCellValue(sheetName, fmt.Sprintf("G%d", rowIdx), "Кол-во")
+		_ = f.SetCellValue(sheetName, fmt.Sprintf("H%d", rowIdx), "Цена за ед.")
+		_ = f.SetCellValue(sheetName, fmt.Sprintf("I%d", rowIdx), "Сумма")
 		rowIdx++
 
 		for _, r := range md.Rows {
 			dateStr := r.CreatedAt.Format("02.01.2006 15:04")
 
+			warehouseName := r.WarehouseName
+			if strings.TrimSpace(warehouseName) == "" && r.WarehouseID > 0 {
+				warehouseName = fmt.Sprintf("ID %d", r.WarehouseID)
+			}
+
 			_ = f.SetCellValue(sheetName, fmt.Sprintf("A%d", rowIdx), dateStr)
-			_ = f.SetCellValue(sheetName, fmt.Sprintf("B%d", rowIdx), r.Comment)
-			_ = f.SetCellValue(sheetName, fmt.Sprintf("C%d", rowIdx), r.BrandName)
-			_ = f.SetCellValue(sheetName, fmt.Sprintf("D%d", rowIdx), r.MaterialName)
-			_ = f.SetCellValue(sheetName, fmt.Sprintf("E%d", rowIdx), r.MaterialUnit)
-			_ = f.SetCellValue(sheetName, fmt.Sprintf("F%d", rowIdx), r.MaterialQty)
-			_ = f.SetCellValue(sheetName, fmt.Sprintf("G%d", rowIdx), r.UnitPrice)
-			_ = f.SetCellValue(sheetName, fmt.Sprintf("H%d", rowIdx), r.Cost)
+			_ = f.SetCellValue(sheetName, fmt.Sprintf("B%d", rowIdx), warehouseName)
+			_ = f.SetCellValue(sheetName, fmt.Sprintf("C%d", rowIdx), r.Comment)
+			_ = f.SetCellValue(sheetName, fmt.Sprintf("D%d", rowIdx), r.BrandName)
+			_ = f.SetCellValue(sheetName, fmt.Sprintf("E%d", rowIdx), r.MaterialName)
+			_ = f.SetCellValue(sheetName, fmt.Sprintf("F%d", rowIdx), r.MaterialUnit)
+			_ = f.SetCellValue(sheetName, fmt.Sprintf("G%d", rowIdx), r.MaterialQty)
+			_ = f.SetCellValue(sheetName, fmt.Sprintf("H%d", rowIdx), r.UnitPrice)
+			_ = f.SetCellValue(sheetName, fmt.Sprintf("I%d", rowIdx), r.Cost)
 			rowIdx++
 		}
 	}

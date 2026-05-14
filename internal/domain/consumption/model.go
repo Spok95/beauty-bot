@@ -79,11 +79,13 @@ type MasterMaterialsReportRow struct {
 	Username  string
 	SessionID int64
 
-	CreatedAt time.Time
-	Place     string // hall|cabinet
-	Unit      string // hour|day
-	Qty       int    // количество часов/дней в сессии
-	Comment   string // комментарий из инвойса (дата/примечание сессии)
+	CreatedAt     time.Time
+	Place         string // hall|cabinet
+	Unit          string // hour|day
+	Qty           int    // количество часов/дней в сессии
+	Comment       string // комментарий из инвойса (дата/примечание сессии)
+	WarehouseID   int64
+	WarehouseName string
 
 	BrandName    string // название бренда материала
 	MaterialName string

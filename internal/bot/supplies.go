@@ -153,19 +153,30 @@ func (b *Bot) showSuppliesExportPickWarehouse(ctx context.Context, chatID int64,
 	}
 }
 
-func (b *Bot) showSuppliesPickMaterial(ctx context.Context, chatID int64, editMsgID int) {
-	mats, err := b.materials.List(ctx, true) // только активные
+func (b *Bot) showSuppliesPickMaterial(ctx context.Context, chatID int64, editMsgID int, whID int64) {
+	mats, err := b.materials.ListWithBalanceByWarehouse(ctx, whID)
 	if err != nil {
 		b.editTextAndClear(chatID, editMsgID, "Ошибка загрузки материалов")
 		return
 	}
+
+	if len(mats) == 0 {
+		b.editTextAndClear(chatID, editMsgID, "Для выбранного склада не настроены категории материалов.")
+		return
+	}
+
 	rows := [][]tgbotapi.InlineKeyboardButton{}
 	for _, m := range mats {
 		rows = append(rows, tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData(m.Name, fmt.Sprintf("sup:mat:%d", m.ID)),
+			tgbotapi.NewInlineKeyboardButtonData(
+				materialDisplayName(m.Brand, m.Name),
+				fmt.Sprintf("sup:mat:%d", m.ID),
+			),
 		))
 	}
+
 	rows = append(rows, navKeyboard(true, true).InlineKeyboard[0])
+
 	kb := tgbotapi.NewInlineKeyboardMarkup(rows...)
 	b.send(tgbotapi.NewEditMessageTextAndMarkup(chatID, editMsgID, "Выберите материал:", kb))
 }
@@ -245,6 +256,18 @@ func (b *Bot) handleSuppliesImportExcel(ctx context.Context, chatID int64, u *us
 			// сообщаем, в какой строке ошибка
 			b.send(tgbotapi.NewMessage(chatID,
 				fmt.Sprintf("Ошибка в строке %d: некорректный material_id (%q). Исправьте файл и попробуйте снова.", i+1, matIDStr)))
+			return
+		}
+
+		allowed, err := b.materials.IsMaterialAllowedInWarehouse(ctx, warehouseID, matID)
+		if err != nil {
+			b.send(tgbotapi.NewMessage(chatID,
+				fmt.Sprintf("Ошибка проверки материала в строке %d.", i+1)))
+			return
+		}
+		if !allowed {
+			b.send(tgbotapi.NewMessage(chatID,
+				fmt.Sprintf("Ошибка в строке %d: материал %d не относится к категориям склада %d.", i+1, matID, warehouseID)))
 			return
 		}
 

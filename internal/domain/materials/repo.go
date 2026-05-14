@@ -206,11 +206,14 @@ func (r *Repo) ListWithBalanceByWarehouse(ctx context.Context, warehouseID int64
 			COALESCE(bal.qty, 0) AS qty,
 			m.category_id
 		FROM materials m
+		INNER JOIN warehouse_material_categories wmc
+			ON wmc.category_id = m.category_id
+			AND wmc.warehouse_id = $1
 		LEFT JOIN material_brands br
 			ON br.id = m.brand_id
-		JOIN balances bal
+		LEFT JOIN balances bal
 			ON bal.material_id = m.id
-		   AND bal.warehouse_id = $1
+			AND bal.warehouse_id = $1
 		WHERE m.active = TRUE
 		ORDER BY m.category_id, br.name, m.name
 	`, warehouseID)
@@ -419,4 +422,84 @@ func (r *Repo) InitBalanceForWarehouse(ctx context.Context, warehouseID, materia
         ON CONFLICT (warehouse_id, material_id) DO NOTHING
     `, warehouseID, materialID)
 	return err
+}
+
+func (r *Repo) IsMaterialAllowedInWarehouse(ctx context.Context, warehouseID, materialID int64) (bool, error) {
+	var ok bool
+
+	err := r.pool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM materials m
+			INNER JOIN warehouse_material_categories wmc
+				ON wmc.category_id = m.category_id
+				AND wmc.warehouse_id = $1
+			WHERE m.id = $2
+			  AND m.active = TRUE
+		)
+	`, warehouseID, materialID).Scan(&ok)
+
+	return ok, err
+}
+
+func (r *Repo) SearchByNameInWarehouse(ctx context.Context, warehouseID int64, q string, onlyActive bool) ([]Material, error) {
+	q = strings.TrimSpace(q)
+	if q == "" {
+		return nil, nil
+	}
+
+	like := "%" + strings.ToLower(q) + "%"
+
+	sql := `
+		SELECT
+			m.id,
+			m.name,
+			m.category_id,
+			m.brand_id,
+			COALESCE(b.name, ''),
+			m.unit,
+			m.active,
+			m.created_at,
+			m.price_per_unit
+		FROM materials m
+		INNER JOIN warehouse_material_categories wmc
+			ON wmc.category_id = m.category_id
+			AND wmc.warehouse_id = $1
+		LEFT JOIN material_brands b
+			ON b.id = m.brand_id
+		WHERE (LOWER(m.name) LIKE $2 OR LOWER(b.name) LIKE $2)
+	`
+
+	if onlyActive {
+		sql += ` AND m.active = TRUE`
+	}
+
+	sql += ` ORDER BY b.name, m.name`
+
+	rows, err := r.pool.Query(ctx, sql, warehouseID, like)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []Material
+	for rows.Next() {
+		var m Material
+		if err := rows.Scan(
+			&m.ID,
+			&m.Name,
+			&m.CategoryID,
+			&m.BrandID,
+			&m.Brand,
+			&m.Unit,
+			&m.Active,
+			&m.CreatedAt,
+			&m.PricePerUnit,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+
+	return out, rows.Err()
 }

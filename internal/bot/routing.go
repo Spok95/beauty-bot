@@ -985,7 +985,7 @@ func (b *Bot) handleStateMessage(ctx context.Context, msg *tgbotapi.Message) {
 			return
 		}
 
-		b.showMaterialSearchPage(ctx, chatID, sent.MessageID, query, 0)
+		b.showMaterialSearchPage(ctx, chatID, sent.MessageID, st.Payload, query, 0)
 		return
 
 	case dialog.StateConsMatQty:
@@ -1015,7 +1015,7 @@ func (b *Bot) handleStateMessage(ctx context.Context, msg *tgbotapi.Message) {
 				return
 			}
 
-			b.showMaterialSearchPage(ctx, chatID, sent.MessageID, s, 0)
+			b.showMaterialSearchPage(ctx, chatID, sent.MessageID, st.Payload, s, 0)
 			return
 		}
 
@@ -1336,7 +1336,7 @@ func (b *Bot) handleStateMessage(ctx context.Context, msg *tgbotapi.Message) {
 				continue
 			}
 			found++
-			_, _ = fmt.Fprintf(&sb, "• %s — %d %s\n", it.Name, it.Balance, it.Unit)
+			_, _ = fmt.Fprintf(&sb, "• %s — %d %s\n", materialDisplayName(it.Brand, it.Name), it.Balance, it.Unit)
 		}
 
 		if found == 0 {
@@ -1539,7 +1539,16 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 			b.showSuppliesPickWarehouse(ctx, fromChat, &cb.Message.MessageID)
 			_ = b.states.Set(ctx, fromChat, dialog.StateSupPickWh, dialog.Payload{})
 		case dialog.StateSupQty:
-			b.showSuppliesPickMaterial(ctx, fromChat, cb.Message.MessageID)
+			whID := payloadInt64(st.Payload["wh_id"])
+
+			b.showSuppliesPickMaterial(
+				ctx,
+				fromChat,
+				cb.Message.MessageID,
+				whID,
+			)
+
+			_ = b.states.Set(ctx, fromChat, dialog.StateSupPickMat, st.Payload)
 			_ = b.states.Set(ctx, fromChat, dialog.StateSupPickMat, st.Payload)
 		case dialog.StateSupUnitPrice:
 			b.editTextWithNav(fromChat, cb.Message.MessageID, "Введите количество (число, например 250)")
@@ -2613,7 +2622,7 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 			return
 		}
 
-		cats, err := b.catalog.ListCategories(ctx)
+		cats, err := b.catalog.ListLinkedCategoriesByWarehouse(ctx, whID)
 		if err != nil || len(cats) == 0 {
 			b.editTextAndClear(fromChat, cb.Message.MessageID, "Не удалось загрузить категории материалов.")
 			_ = b.answerCallback(cb, "Ошибка", true)
@@ -2687,7 +2696,7 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 				continue
 			}
 			found++
-			_, _ = fmt.Fprintf(&sb, "• %s — %d %s\n", it.Name, it.Balance, it.Unit)
+			_, _ = fmt.Fprintf(&sb, "• %s — %d %s\n", materialDisplayName(it.Brand, it.Name), it.Balance, it.Unit)
 		}
 		if found == 0 {
 			sb.WriteString("В этой категории на складе нет материалов.")
@@ -2769,14 +2778,15 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 
 		st, _ := b.states.Get(ctx, fromChat)
 		_ = b.states.Set(ctx, fromChat, dialog.StateSupPickMat, st.Payload) // wh_id и items остаются
-		b.showSuppliesPickMaterial(ctx, fromChat, cb.Message.MessageID)
+		whID := int64(st.Payload["wh_id"].(float64))
+		b.showSuppliesPickMaterial(ctx, fromChat, cb.Message.MessageID, whID)
 		_ = b.answerCallback(cb, "Ок", false)
 		return
 
 	case strings.HasPrefix(data, "sup:wh:"):
 		whID, _ := strconv.ParseInt(strings.TrimPrefix(data, "sup:wh:"), 10, 64)
 		_ = b.states.Set(ctx, fromChat, dialog.StateSupPickMat, dialog.Payload{"wh_id": whID})
-		b.showSuppliesPickMaterial(ctx, fromChat, cb.Message.MessageID)
+		b.showSuppliesPickMaterial(ctx, fromChat, cb.Message.MessageID, whID)
 		_ = b.answerCallback(cb, "Ок", false)
 		return
 
@@ -3131,7 +3141,7 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 		st.Payload["cons_search_page"] = float64(page)
 		_ = b.states.Set(ctx, fromChat, dialog.StateConsMatPick, st.Payload)
 
-		b.showMaterialSearchPage(ctx, fromChat, cb.Message.MessageID, query, page)
+		b.showMaterialSearchPage(ctx, fromChat, cb.Message.MessageID, st.Payload, query, page)
 		_ = b.answerCallback(cb, "Ок", false)
 		return
 
@@ -3397,6 +3407,15 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 		sessionPayload := map[string]any{
 			"items_count": len(items),
 		}
+
+		if warehouseID := payloadInt64(st.Payload["warehouse_id"]); warehouseID > 0 {
+			sessionPayload["warehouse_id"] = warehouseID
+		}
+
+		if warehouseName, ok := st.Payload["warehouse_name"].(string); ok && strings.TrimSpace(warehouseName) != "" {
+			sessionPayload["warehouse_name"] = warehouseName
+		}
+
 		if comment != "" {
 			sessionPayload["comment"] = comment
 		}
@@ -4138,14 +4157,23 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 	}
 }
 
-func (b *Bot) showMaterialSearchPage(ctx context.Context, chatID int64, editMsgID int, query string, page int) {
+func (b *Bot) showMaterialSearchPage(ctx context.Context, chatID int64, editMsgID int, payload dialog.Payload, query string, page int) {
 	query = strings.TrimSpace(query)
 	if query == "" {
 		b.editTextAndClear(chatID, editMsgID, "Пустой запрос поиска.")
 		return
 	}
 
-	mats, err := b.materials.SearchByName(ctx, query, true)
+	warehouseID := payloadInt64(payload["warehouse_id"])
+
+	var mats []materials.Material
+	var err error
+
+	if warehouseID > 0 {
+		mats, err = b.materials.SearchByNameInWarehouse(ctx, warehouseID, query, true)
+	} else {
+		mats, err = b.materials.SearchByName(ctx, query, true)
+	}
 	if err != nil {
 		b.editTextAndClear(chatID, editMsgID, "Ошибка поиска материалов. Попробуйте позже.")
 		return
