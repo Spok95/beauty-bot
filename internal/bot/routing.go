@@ -1765,6 +1765,42 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 		_ = b.answerCallback(cb, "История обновлена", false)
 		return
 
+	case strings.HasPrefix(data, "adminchat:media:"):
+		msgIDStr := strings.TrimPrefix(data, "adminchat:media:")
+
+		messageID, err := strconv.ParseInt(msgIDStr, 10, 64)
+		if err != nil {
+			_ = b.answerCallback(cb, "Некорректный ID", true)
+			return
+		}
+
+		u, _ := b.users.GetByTelegramID(ctx, cb.From.ID)
+		if u == nil || u.Status != users.StatusApproved {
+			_ = b.answerCallback(cb, "Нет доступа", true)
+			return
+		}
+
+		if u.Role != users.RoleAdmin && u.Role != users.RoleAdministrator {
+			_ = b.answerCallback(cb, "Недостаточно прав", true)
+			return
+		}
+
+		m, err := b.adminChatRepo.GetByID(ctx, messageID)
+		if err != nil || m == nil {
+			_ = b.answerCallback(cb, "Сообщение не найдено", true)
+			return
+		}
+
+		if m.TelegramFileID == "" {
+			_ = b.answerCallback(cb, "У сообщения нет вложения", true)
+			return
+		}
+
+		b.sendAdminChatHistoryMedia(fromChat, m)
+
+		_ = b.answerCallback(cb, "Вложение отправлено", false)
+		return
+
 	case strings.HasPrefix(data, "adminchat:reply:"):
 		msgIDStr := strings.TrimPrefix(data, "adminchat:reply:")
 
