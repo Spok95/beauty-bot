@@ -1539,13 +1539,11 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 			b.showSuppliesPickWarehouse(ctx, fromChat, &cb.Message.MessageID)
 			_ = b.states.Set(ctx, fromChat, dialog.StateSupPickWh, dialog.Payload{})
 		case dialog.StateSupQty:
-			whID := payloadInt64(st.Payload["wh_id"])
-
 			b.showSuppliesPickMaterial(
 				ctx,
 				fromChat,
 				cb.Message.MessageID,
-				whID,
+				0,
 			)
 
 			_ = b.states.Set(ctx, fromChat, dialog.StateSupPickMat, st.Payload)
@@ -2834,15 +2832,14 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 
 		st, _ := b.states.Get(ctx, fromChat)
 		_ = b.states.Set(ctx, fromChat, dialog.StateSupPickMat, st.Payload) // wh_id и items остаются
-		whID := int64(st.Payload["wh_id"].(float64))
-		b.showSuppliesPickMaterial(ctx, fromChat, cb.Message.MessageID, whID)
+		b.showSuppliesPickMaterial(ctx, fromChat, cb.Message.MessageID, 0)
 		_ = b.answerCallback(cb, "Ок", false)
 		return
 
 	case strings.HasPrefix(data, "sup:wh:"):
 		whID, _ := strconv.ParseInt(strings.TrimPrefix(data, "sup:wh:"), 10, 64)
 		_ = b.states.Set(ctx, fromChat, dialog.StateSupPickMat, dialog.Payload{"wh_id": whID})
-		b.showSuppliesPickMaterial(ctx, fromChat, cb.Message.MessageID, whID)
+		b.showSuppliesPickMaterial(ctx, fromChat, cb.Message.MessageID, 0)
 		_ = b.answerCallback(cb, "Ок", false)
 		return
 
@@ -2850,6 +2847,19 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 		whID, _ := strconv.ParseInt(strings.TrimPrefix(data, "sup:expwh:"), 10, 64)
 		b.exportWarehouseMaterialsExcel(ctx, fromChat, cb.Message.MessageID, whID)
 		_ = b.answerCallback(cb, "Файл сформирован", false)
+		return
+
+	case strings.HasPrefix(data, "sup:mats:"):
+		page, _ := strconv.Atoi(strings.TrimPrefix(data, "sup:mats:"))
+
+		b.showSuppliesPickMaterial(
+			ctx,
+			fromChat,
+			cb.Message.MessageID,
+			page,
+		)
+
+		_ = b.answerCallback(cb, "Ок", false)
 		return
 
 	case strings.HasPrefix(data, "sup:mat:"):

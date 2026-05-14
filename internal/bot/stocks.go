@@ -200,7 +200,7 @@ func (b *Bot) exportWarehouseMaterialsExcel(ctx context.Context, chatID int64, m
 	}
 
 	// 3) категории
-	cats, err := b.catalog.ListCategories(ctx)
+	cats, err := b.catalog.ListLinkedCategoriesByWarehouse(ctx, whID)
 	if err != nil {
 		b.editTextAndClear(chatID, msgID, "Ошибка загрузки категорий")
 		return
@@ -554,7 +554,7 @@ func (b *Bot) exportWarehouseStocksExcel(ctx context.Context, chatID int64, msgI
 	}
 
 	// 3) категории
-	cats, err := b.catalog.ListCategories(ctx)
+	cats, err := b.catalog.ListLinkedCategoriesByWarehouse(ctx, whID)
 	if err != nil {
 		b.editTextAndClear(chatID, msgID, "Ошибка загрузки категорий")
 		return

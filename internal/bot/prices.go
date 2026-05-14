@@ -131,7 +131,7 @@ func (b *Bot) exportWarehouseMaterialPricesExcel(ctx context.Context, chatID int
 	}
 
 	// 3) категории
-	cats, err := b.catalog.ListCategories(ctx)
+	cats, err := b.catalog.ListLinkedCategoriesByWarehouse(ctx, whID)
 	if err != nil {
 		b.editTextAndClear(chatID, msgID, "Ошибка загрузки категорий")
 		return
@@ -628,7 +628,7 @@ func (b *Bot) handleAdmRentMaterialsReport(
 		if err := f.SetCellValue(sheetName, "A1", header); err != nil {
 			return err
 		}
-		if err := f.MergeCell(sheetName, "A1", "H1"); err != nil {
+		if err := f.MergeCell(sheetName, "A1", "I1"); err != nil {
 			return err
 		}
 		rowIdx += 2
