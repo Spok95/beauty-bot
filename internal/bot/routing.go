@@ -2221,6 +2221,17 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 		_ = b.answerCallback(cb, "Ок", false)
 		return
 
+	case strings.HasPrefix(data, "adm:cat:list:page:"):
+		page, err := strconv.Atoi(strings.TrimPrefix(data, "adm:cat:list:page:"))
+		if err != nil {
+			_ = b.answerCallback(cb, "Некорректная страница", true)
+			return
+		}
+
+		b.showCategoryListPage(ctx, fromChat, cb.Message.MessageID, page)
+		_ = b.answerCallback(cb, "Ок", false)
+		return
+
 	case strings.HasPrefix(data, "adm:cat:menu:"):
 		id, _ := strconv.ParseInt(strings.TrimPrefix(data, "adm:cat:menu:"), 10, 64)
 		_ = b.states.Set(ctx, fromChat, dialog.StateAdmCatMenu, dialog.Payload{"cat_id": id})
@@ -2303,6 +2314,71 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 	case data == "adm:mat:list":
 		_ = b.states.Set(ctx, fromChat, dialog.StateAdmMatList, dialog.Payload{})
 		b.showMaterialList(ctx, fromChat, cb.Message.MessageID)
+		_ = b.answerCallback(cb, "Ок", false)
+		return
+
+	case strings.HasPrefix(data, "adm:mat:list:page:"):
+		page, err := strconv.Atoi(strings.TrimPrefix(data, "adm:mat:list:page:"))
+		if err != nil {
+			_ = b.answerCallback(cb, "Некорректная страница", true)
+			return
+		}
+
+		b.showMaterialListPage(ctx, fromChat, cb.Message.MessageID, page)
+		_ = b.answerCallback(cb, "Ок", false)
+		return
+
+	case strings.HasPrefix(data, "adm:mat:list:brandpage:"):
+		tail := strings.TrimPrefix(data, "adm:mat:list:brandpage:")
+		parts := strings.Split(tail, ":")
+		if len(parts) != 2 {
+			_ = b.answerCallback(cb, "Некорректные данные", true)
+			return
+		}
+
+		catID, err := strconv.ParseInt(parts[0], 10, 64)
+		if err != nil {
+			_ = b.answerCallback(cb, "Некорректная категория", true)
+			return
+		}
+
+		page, err := strconv.Atoi(parts[1])
+		if err != nil {
+			_ = b.answerCallback(cb, "Некорректная страница", true)
+			return
+		}
+
+		b.showMaterialBrandListPage(ctx, fromChat, cb.Message.MessageID, catID, page)
+		_ = b.answerCallback(cb, "Ок", false)
+		return
+
+	case strings.HasPrefix(data, "adm:mat:list:matpage:"):
+		tail := strings.TrimPrefix(data, "adm:mat:list:matpage:")
+		parts := strings.Split(tail, ":")
+		if len(parts) != 3 {
+			_ = b.answerCallback(cb, "Некорректные данные", true)
+			return
+		}
+
+		catID, err := strconv.ParseInt(parts[0], 10, 64)
+		if err != nil {
+			_ = b.answerCallback(cb, "Некорректная категория", true)
+			return
+		}
+
+		decoded, err := base64.StdEncoding.DecodeString(parts[1])
+		if err != nil {
+			_ = b.answerCallback(cb, "Некорректный бренд", true)
+			return
+		}
+
+		page, err := strconv.Atoi(parts[2])
+		if err != nil {
+			_ = b.answerCallback(cb, "Некорректная страница", true)
+			return
+		}
+
+		b.showMaterialListByBrandPage(ctx, fromChat, cb.Message.MessageID, catID, string(decoded), page)
 		_ = b.answerCallback(cb, "Ок", false)
 		return
 
@@ -2622,29 +2698,27 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 			return
 		}
 
-		cats, err := b.catalog.ListLinkedCategoriesByWarehouse(ctx, whID)
-		if err != nil || len(cats) == 0 {
-			b.editTextAndClear(fromChat, cb.Message.MessageID, "Не удалось загрузить категории материалов.")
-			_ = b.answerCallback(cb, "Ошибка", true)
-			return
-		}
-
-		rows := make([][]tgbotapi.InlineKeyboardButton, 0, len(cats)+1)
-		for _, c := range cats {
-			rows = append(rows, tgbotapi.NewInlineKeyboardRow(
-				tgbotapi.NewInlineKeyboardButtonData(c.Name, fmt.Sprintf("mstock:cat:%d", c.ID)),
-			))
-		}
-		rows = append(rows, navKeyboard(false, true).InlineKeyboard[0])
-
-		kb := tgbotapi.NewInlineKeyboardMarkup(rows...)
-		text := fmt.Sprintf("Склад: Расходники (ID %d)\nВыберите категорию:", whID)
-		b.send(tgbotapi.NewEditMessageTextAndMarkup(fromChat, cb.Message.MessageID, text, kb))
+		b.showMasterStockCategoryList(ctx, fromChat, cb.Message.MessageID, whID, 0)
 
 		_ = b.answerCallback(cb, "Ок", false)
 		return
 
 	case strings.HasPrefix(data, "mstock:cat:"):
+		tail := strings.TrimPrefix(data, "mstock:cat:")
+		parts := strings.Split(tail, ":")
+
+		catID, err := strconv.ParseInt(parts[0], 10, 64)
+		if err != nil {
+			b.editTextAndClear(fromChat, cb.Message.MessageID, "Некорректная категория.")
+			_ = b.answerCallback(cb, "Ошибка", true)
+			return
+		}
+
+		page := 0
+		if len(parts) > 1 {
+			page, _ = strconv.Atoi(parts[1])
+		}
+
 		u, _ := b.users.GetByTelegramID(ctx, cb.From.ID)
 		if u == nil || u.Role != users.RoleMaster || u.Status != users.StatusApproved {
 			_ = b.answerCallback(cb, "Нет доступа", true)
@@ -2658,52 +2732,34 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 			return
 		}
 
-		catStr := strings.TrimPrefix(data, "mstock:cat:")
-		catID, err := strconv.ParseInt(catStr, 10, 64)
-		if err != nil {
-			b.editTextAndClear(fromChat, cb.Message.MessageID, "Некорректная категория.")
-			_ = b.answerCallback(cb, "Ошибка", true)
-			return
-		}
+		b.showMasterStockCategoryItemsPage(ctx, fromChat, cb.Message.MessageID, whID, catID, page)
 
-		items, err := b.materials.ListWithBalanceByWarehouse(ctx, whID)
-		if err != nil {
-			b.editTextAndClear(fromChat, cb.Message.MessageID, "Ошибка загрузки материалов.")
-			_ = b.answerCallback(cb, "Ошибка", true)
-			return
-		}
-
-		cats, err := b.catalog.ListCategories(ctx)
-		if err != nil {
-			b.editTextAndClear(fromChat, cb.Message.MessageID, "Ошибка загрузки категорий.")
-			_ = b.answerCallback(cb, "Ошибка", true)
-			return
-		}
-		catName := fmt.Sprintf("ID %d", catID)
-		for _, c := range cats {
-			if c.ID == catID {
-				catName = c.Name
-				break
-			}
-		}
-
-		var sb strings.Builder
-		_, _ = fmt.Fprintf(&sb, "Склад: Расходники\nКатегория: %s\n\n", catName)
-
-		found := 0
-		for _, it := range items {
-			if it.CategoryID != catID {
-				continue
-			}
-			found++
-			_, _ = fmt.Fprintf(&sb, "• %s — %d %s\n", materialDisplayName(it.Brand, it.Name), it.Balance, it.Unit)
-		}
-		if found == 0 {
-			sb.WriteString("В этой категории на складе нет материалов.")
-		}
-
-		b.editTextAndClear(fromChat, cb.Message.MessageID, sb.String())
 		_ = b.answerCallback(cb, "Готово", false)
+		return
+
+	case strings.HasPrefix(data, "mstock:catlist:"):
+		page, err := strconv.Atoi(strings.TrimPrefix(data, "mstock:catlist:"))
+		if err != nil {
+			_ = b.answerCallback(cb, "Некорректная страница", true)
+			return
+		}
+
+		u, _ := b.users.GetByTelegramID(ctx, cb.From.ID)
+		if u == nil || u.Role != users.RoleMaster || u.Status != users.StatusApproved {
+			_ = b.answerCallback(cb, "Нет доступа", true)
+			return
+		}
+
+		whID, err := b.getConsumablesWarehouseID(ctx)
+		if err != nil {
+			b.editTextAndClear(fromChat, cb.Message.MessageID, "Склад «Расходники» не найден. Обратитесь к администратору.")
+			_ = b.answerCallback(cb, "Ошибка", true)
+			return
+		}
+
+		b.showMasterStockCategoryList(ctx, fromChat, cb.Message.MessageID, whID, page)
+
+		_ = b.answerCallback(cb, "Ок", false)
 		return
 
 		// Остатки: выбор склада -> список
@@ -4526,5 +4582,178 @@ func payloadInt64(v any) int64 {
 		return int64(x)
 	default:
 		return 0
+	}
+}
+
+func (b *Bot) showMasterStockCategoryList(ctx context.Context, chatID int64, editMsgID int, whID int64, page int) {
+	cats, err := b.catalog.ListLinkedCategoriesByWarehouse(ctx, whID)
+	if err != nil || len(cats) == 0 {
+		b.editTextAndClear(chatID, editMsgID, "Для склада «Расходники» не настроены категории материалов.")
+		return
+	}
+
+	totalPages := (len(cats) + materialSearchPageSize - 1) / materialSearchPageSize
+
+	if page < 0 {
+		page = 0
+	}
+	if page >= totalPages {
+		page = totalPages - 1
+	}
+
+	start := page * materialSearchPageSize
+	end := start + materialSearchPageSize
+	if end > len(cats) {
+		end = len(cats)
+	}
+
+	rows := [][]tgbotapi.InlineKeyboardButton{}
+
+	for _, c := range cats[start:end] {
+		rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(c.Name, fmt.Sprintf("mstock:cat:%d:0", c.ID)),
+		))
+	}
+
+	if totalPages > 1 {
+		pager := []tgbotapi.InlineKeyboardButton{}
+
+		if page > 0 {
+			pager = append(pager,
+				tgbotapi.NewInlineKeyboardButtonData("⬅️", fmt.Sprintf("mstock:catlist:%d", page-1)),
+			)
+		} else {
+			pager = append(pager, tgbotapi.NewInlineKeyboardButtonData(" ", "noop"))
+		}
+
+		pager = append(pager,
+			tgbotapi.NewInlineKeyboardButtonData(fmt.Sprintf("%d/%d", page+1, totalPages), "noop"),
+		)
+
+		if page < totalPages-1 {
+			pager = append(pager,
+				tgbotapi.NewInlineKeyboardButtonData("➡️", fmt.Sprintf("mstock:catlist:%d", page+1)),
+			)
+		} else {
+			pager = append(pager, tgbotapi.NewInlineKeyboardButtonData(" ", "noop"))
+		}
+
+		rows = append(rows, pager)
+	}
+
+	rows = append(rows, navKeyboard(false, true).InlineKeyboard[0])
+
+	kb := tgbotapi.NewInlineKeyboardMarkup(rows...)
+	text := fmt.Sprintf("Склад: Расходники (ID %d)\nВыберите категорию:\nСтраница: %d/%d", whID, page+1, totalPages)
+
+	b.send(tgbotapi.NewEditMessageTextAndMarkup(chatID, editMsgID, text, kb))
+}
+
+func (b *Bot) showMasterStockCategoryItemsPage(ctx context.Context, chatID int64, editMsgID int, whID, catID int64, page int) {
+	allItems, err := b.materials.ListWithBalanceByWarehouse(ctx, whID)
+	if err != nil {
+		b.editTextAndClear(chatID, editMsgID, "Ошибка загрузки материалов.")
+		return
+	}
+
+	categoryName := fmt.Sprintf("ID %d", catID)
+	if c, _ := b.catalog.GetCategoryByID(ctx, catID); c != nil {
+		categoryName = c.Name
+	}
+
+	items := make([]materials.MatWithBal, 0)
+	for _, it := range allItems {
+		if it.CategoryID == catID {
+			items = append(items, it)
+		}
+	}
+
+	if len(items) == 0 {
+		kb := tgbotapi.NewInlineKeyboardMarkup(navKeyboard(true, true).InlineKeyboard[0])
+		text := fmt.Sprintf("Склад: Расходники\nКатегория: %s\n\nВ этой категории на складе нет материалов.", categoryName)
+		b.send(tgbotapi.NewEditMessageTextAndMarkup(chatID, editMsgID, text, kb))
+		return
+	}
+
+	totalPages := (len(items) + materialSearchPageSize - 1) / materialSearchPageSize
+
+	if page < 0 {
+		page = 0
+	}
+	if page >= totalPages {
+		page = totalPages - 1
+	}
+
+	start := page * materialSearchPageSize
+	end := start + materialSearchPageSize
+	if end > len(items) {
+		end = len(items)
+	}
+
+	var sb strings.Builder
+	_, _ = fmt.Fprintf(&sb, "Склад: Расходники\nКатегория: %s\nСтраница: %d/%d\n\n", categoryName, page+1, totalPages)
+
+	for _, it := range items[start:end] {
+		_, _ = fmt.Fprintf(
+			&sb,
+			"• %s — %s %s\n",
+			materialDisplayName(it.Brand, it.Name),
+			formatQty(it.Balance),
+			materialUnitLabel(string(it.Unit)),
+		)
+	}
+
+	rows := [][]tgbotapi.InlineKeyboardButton{}
+
+	if totalPages > 1 {
+		pager := []tgbotapi.InlineKeyboardButton{}
+
+		if page > 0 {
+			pager = append(pager,
+				tgbotapi.NewInlineKeyboardButtonData("⬅️", fmt.Sprintf("mstock:cat:%d:%d", catID, page-1)),
+			)
+		} else {
+			pager = append(pager, tgbotapi.NewInlineKeyboardButtonData(" ", "noop"))
+		}
+
+		pager = append(pager,
+			tgbotapi.NewInlineKeyboardButtonData(fmt.Sprintf("%d/%d", page+1, totalPages), "noop"),
+		)
+
+		if page < totalPages-1 {
+			pager = append(pager,
+				tgbotapi.NewInlineKeyboardButtonData("➡️", fmt.Sprintf("mstock:cat:%d:%d", catID, page+1)),
+			)
+		} else {
+			pager = append(pager, tgbotapi.NewInlineKeyboardButtonData(" ", "noop"))
+		}
+
+		rows = append(rows, pager)
+	}
+
+	rows = append(rows,
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("⬅️ К категориям", "mstock:bycat"),
+		),
+	)
+	rows = append(rows, navKeyboard(false, true).InlineKeyboard[0])
+
+	kb := tgbotapi.NewInlineKeyboardMarkup(rows...)
+	b.send(tgbotapi.NewEditMessageTextAndMarkup(chatID, editMsgID, sb.String(), kb))
+}
+
+func formatQty(v any) string {
+	switch x := v.(type) {
+	case int:
+		return fmt.Sprintf("%d", x)
+	case int64:
+		return fmt.Sprintf("%d", x)
+	case float64:
+		if x == float64(int64(x)) {
+			return fmt.Sprintf("%d", int64(x))
+		}
+		return fmt.Sprintf("%.2f", x)
+	default:
+		return fmt.Sprintf("%v", x)
 	}
 }

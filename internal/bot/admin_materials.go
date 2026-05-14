@@ -55,15 +55,39 @@ func (b *Bot) showMaterialWarehousePicker(chatID int64, editMsgID int) {
 }
 
 func (b *Bot) showMaterialList(ctx context.Context, chatID int64, editMsgID int) {
+	b.showMaterialListPage(ctx, chatID, editMsgID, 0)
+}
+
+func (b *Bot) showMaterialListPage(ctx context.Context, chatID int64, editMsgID int, page int) {
 	categories, err := b.catalog.ListCategories(ctx)
 	if err != nil {
 		b.editTextAndClear(chatID, editMsgID, "Ошибка загрузки категорий")
 		return
 	}
 
+	if len(categories) == 0 {
+		b.editTextAndClear(chatID, editMsgID, "Категорий пока нет.")
+		return
+	}
+
+	totalPages := (len(categories) + materialSearchPageSize - 1) / materialSearchPageSize
+
+	if page < 0 {
+		page = 0
+	}
+	if page >= totalPages {
+		page = totalPages - 1
+	}
+
+	start := page * materialSearchPageSize
+	end := start + materialSearchPageSize
+	if end > len(categories) {
+		end = len(categories)
+	}
+
 	rows := [][]tgbotapi.InlineKeyboardButton{}
 
-	for _, c := range categories {
+	for _, c := range categories[start:end] {
 		rows = append(rows, tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData(
 				fmt.Sprintf("%s %s", badge(c.Active), c.Name),
@@ -72,13 +96,45 @@ func (b *Bot) showMaterialList(ctx context.Context, chatID int64, editMsgID int)
 		))
 	}
 
+	if totalPages > 1 {
+		pager := []tgbotapi.InlineKeyboardButton{}
+
+		if page > 0 {
+			pager = append(pager,
+				tgbotapi.NewInlineKeyboardButtonData("⬅️", fmt.Sprintf("adm:mat:list:page:%d", page-1)),
+			)
+		} else {
+			pager = append(pager, tgbotapi.NewInlineKeyboardButtonData(" ", "noop"))
+		}
+
+		pager = append(pager,
+			tgbotapi.NewInlineKeyboardButtonData(fmt.Sprintf("%d/%d", page+1, totalPages), "noop"),
+		)
+
+		if page < totalPages-1 {
+			pager = append(pager,
+				tgbotapi.NewInlineKeyboardButtonData("➡️", fmt.Sprintf("adm:mat:list:page:%d", page+1)),
+			)
+		} else {
+			pager = append(pager, tgbotapi.NewInlineKeyboardButtonData(" ", "noop"))
+		}
+
+		rows = append(rows, pager)
+	}
+
 	rows = append(rows, navKeyboard(true, true).InlineKeyboard[0])
 
 	kb := tgbotapi.NewInlineKeyboardMarkup(rows...)
-	b.send(tgbotapi.NewEditMessageTextAndMarkup(chatID, editMsgID, "Список материалов:\n\nВыберите категорию:", kb))
+	text := fmt.Sprintf("Список материалов:\n\nВыберите категорию:\nСтраница: %d/%d", page+1, totalPages)
+
+	b.send(tgbotapi.NewEditMessageTextAndMarkup(chatID, editMsgID, text, kb))
 }
 
 func (b *Bot) showMaterialBrandList(ctx context.Context, chatID int64, editMsgID int, catID int64) {
+	b.showMaterialBrandListPage(ctx, chatID, editMsgID, catID, 0)
+}
+
+func (b *Bot) showMaterialBrandListPage(ctx context.Context, chatID int64, editMsgID int, catID int64, page int) {
 	categoryName := fmt.Sprintf("ID:%d", catID)
 	if c, _ := b.catalog.GetCategoryByID(ctx, catID); c != nil {
 		categoryName = c.Name
@@ -90,9 +146,29 @@ func (b *Bot) showMaterialBrandList(ctx context.Context, chatID int64, editMsgID
 		return
 	}
 
+	if len(brands) == 0 {
+		b.editTextAndClear(chatID, editMsgID, "В этой категории пока нет брендов.")
+		return
+	}
+
+	totalPages := (len(brands) + materialSearchPageSize - 1) / materialSearchPageSize
+
+	if page < 0 {
+		page = 0
+	}
+	if page >= totalPages {
+		page = totalPages - 1
+	}
+
+	start := page * materialSearchPageSize
+	end := start + materialSearchPageSize
+	if end > len(brands) {
+		end = len(brands)
+	}
+
 	rows := [][]tgbotapi.InlineKeyboardButton{}
 
-	for _, br := range brands {
+	for _, br := range brands[start:end] {
 		if br == "" {
 			br = "Без бренда"
 		}
@@ -106,18 +182,50 @@ func (b *Bot) showMaterialBrandList(ctx context.Context, chatID int64, editMsgID
 		))
 	}
 
+	if totalPages > 1 {
+		pager := []tgbotapi.InlineKeyboardButton{}
+
+		if page > 0 {
+			pager = append(pager,
+				tgbotapi.NewInlineKeyboardButtonData("⬅️", fmt.Sprintf("adm:mat:list:brandpage:%d:%d", catID, page-1)),
+			)
+		} else {
+			pager = append(pager, tgbotapi.NewInlineKeyboardButtonData(" ", "noop"))
+		}
+
+		pager = append(pager,
+			tgbotapi.NewInlineKeyboardButtonData(fmt.Sprintf("%d/%d", page+1, totalPages), "noop"),
+		)
+
+		if page < totalPages-1 {
+			pager = append(pager,
+				tgbotapi.NewInlineKeyboardButtonData("➡️", fmt.Sprintf("adm:mat:list:brandpage:%d:%d", catID, page+1)),
+			)
+		} else {
+			pager = append(pager, tgbotapi.NewInlineKeyboardButtonData(" ", "noop"))
+		}
+
+		rows = append(rows, pager)
+	}
+
 	rows = append(rows, navKeyboard(true, true).InlineKeyboard[0])
 
 	kb := tgbotapi.NewInlineKeyboardMarkup(rows...)
 	text := fmt.Sprintf(
-		"Список материалов:\n\nКатегория: %s\n\nВыберите бренд:",
+		"Список материалов:\n\nКатегория: %s\n\nВыберите бренд:\nСтраница: %d/%d",
 		categoryName,
+		page+1,
+		totalPages,
 	)
 
 	b.send(tgbotapi.NewEditMessageTextAndMarkup(chatID, editMsgID, text, kb))
 }
 
 func (b *Bot) showMaterialListByBrand(ctx context.Context, chatID int64, editMsgID int, catID int64, brand string) {
+	b.showMaterialListByBrandPage(ctx, chatID, editMsgID, catID, brand, 0)
+}
+
+func (b *Bot) showMaterialListByBrandPage(ctx context.Context, chatID int64, editMsgID int, catID int64, brand string, page int) {
 	categoryName := fmt.Sprintf("ID:%d", catID)
 	if c, _ := b.catalog.GetCategoryByID(ctx, catID); c != nil {
 		categoryName = c.Name
@@ -129,22 +237,72 @@ func (b *Bot) showMaterialListByBrand(ctx context.Context, chatID int64, editMsg
 		return
 	}
 
+	if len(materialsList) == 0 {
+		b.editTextAndClear(chatID, editMsgID, "В этом бренде нет материалов.")
+		return
+	}
+
+	totalPages := (len(materialsList) + materialSearchPageSize - 1) / materialSearchPageSize
+
+	if page < 0 {
+		page = 0
+	}
+	if page >= totalPages {
+		page = totalPages - 1
+	}
+
+	start := page * materialSearchPageSize
+	end := start + materialSearchPageSize
+	if end > len(materialsList) {
+		end = len(materialsList)
+	}
+
 	rows := [][]tgbotapi.InlineKeyboardButton{}
 
-	for _, m := range materialsList {
+	for _, m := range materialsList[start:end] {
 		label := fmt.Sprintf("%s %s", badge(m.Active), materialDisplayName(m.Brand, m.Name))
 		rows = append(rows, tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData(label, fmt.Sprintf("adm:mat:menu:%d", m.ID)),
 		))
 	}
 
+	if totalPages > 1 {
+		b64 := base64.StdEncoding.EncodeToString([]byte(brand))
+
+		pager := []tgbotapi.InlineKeyboardButton{}
+
+		if page > 0 {
+			pager = append(pager,
+				tgbotapi.NewInlineKeyboardButtonData("⬅️", fmt.Sprintf("adm:mat:list:matpage:%d:%s:%d", catID, b64, page-1)),
+			)
+		} else {
+			pager = append(pager, tgbotapi.NewInlineKeyboardButtonData(" ", "noop"))
+		}
+
+		pager = append(pager,
+			tgbotapi.NewInlineKeyboardButtonData(fmt.Sprintf("%d/%d", page+1, totalPages), "noop"),
+		)
+
+		if page < totalPages-1 {
+			pager = append(pager,
+				tgbotapi.NewInlineKeyboardButtonData("➡️", fmt.Sprintf("adm:mat:list:matpage:%d:%s:%d", catID, b64, page+1)),
+			)
+		} else {
+			pager = append(pager, tgbotapi.NewInlineKeyboardButtonData(" ", "noop"))
+		}
+
+		rows = append(rows, pager)
+	}
+
 	rows = append(rows, navKeyboard(true, true).InlineKeyboard[0])
 
 	kb := tgbotapi.NewInlineKeyboardMarkup(rows...)
 	text := fmt.Sprintf(
-		"Список материалов:\n\nКатегория: %s\nБренд: %s\n\nВыберите материал:",
+		"Список материалов:\n\nКатегория: %s\nБренд: %s\n\nВыберите материал:\nСтраница: %d/%d",
 		categoryName,
 		brand,
+		page+1,
+		totalPages,
 	)
 
 	b.send(tgbotapi.NewEditMessageTextAndMarkup(chatID, editMsgID, text, kb))
