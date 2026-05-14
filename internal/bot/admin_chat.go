@@ -250,3 +250,27 @@ func adminChatCancelKeyboard() tgbotapi.InlineKeyboardMarkup {
 		),
 	)
 }
+
+func (b *Bot) sendAdminChatHistoryMedia(chatID int64, m *adminchat.Message) {
+	if m.TelegramFileID == "" {
+		b.send(tgbotapi.NewMessage(chatID, "У этого сообщения нет вложения."))
+		return
+	}
+
+	header := fmt.Sprintf(
+		"📎 Вложение из истории #%d\nТип: %s",
+		m.ID,
+		adminChatMessageTypeLabel(m.MessageType),
+	)
+
+	if m.Caption != "" {
+		header += "\nПодпись: " + m.Caption
+	}
+
+	if m.FileName != "" {
+		header += "\nФайл: " + m.FileName
+	}
+
+	b.send(tgbotapi.NewMessage(chatID, header))
+	b.sendAdminChatPayload(chatID, m)
+}

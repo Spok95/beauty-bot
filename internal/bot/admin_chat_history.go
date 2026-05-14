@@ -44,14 +44,23 @@ func (b *Bot) showAdminChatHistory(ctx context.Context, chatID int64, page int) 
 		lines = append(lines, formatAdminChatHistoryItem(&m))
 		lines = append(lines, "--------------------")
 
-		rows = append(rows,
-			tgbotapi.NewInlineKeyboardRow(
-				tgbotapi.NewInlineKeyboardButtonData(
-					fmt.Sprintf("↩️ Ответить #%d", m.ID),
-					fmt.Sprintf("adminchat:reply:%d", m.ID),
-				),
+		row := []tgbotapi.InlineKeyboardButton{
+			tgbotapi.NewInlineKeyboardButtonData(
+				fmt.Sprintf("↩️ Ответить #%d", m.ID),
+				fmt.Sprintf("adminchat:reply:%d", m.ID),
 			),
-		)
+		}
+
+		if m.TelegramFileID != "" {
+			row = append(row,
+				tgbotapi.NewInlineKeyboardButtonData(
+					fmt.Sprintf("📎 Открыть #%d", m.ID),
+					fmt.Sprintf("adminchat:media:%d", m.ID),
+				),
+			)
+		}
+
+		rows = append(rows, row)
 	}
 
 	msg := tgbotapi.NewMessage(chatID, strings.Join(lines, "\n"))
