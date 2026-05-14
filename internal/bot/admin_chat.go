@@ -70,8 +70,20 @@ func (b *Bot) handleAdminChatMessage(ctx context.Context, msg *tgbotapi.Message)
 		b.sendAdminChatPayload(adminID, stored)
 	}
 
-	doneMsg := tgbotapi.NewMessage(chatID,
-		fmt.Sprintf("Сообщение сохранено и отправлено администраторам. ID: #%d\n\nМожно отправить следующее сообщение или нажать «Отменить».", stored.ID))
+	b.forwardAdminReplyToOriginalSender(ctx, stored, u)
+
+	doneText := fmt.Sprintf(
+		"Сообщение сохранено и отправлено администраторам. ID: #%d",
+		stored.ID,
+	)
+
+	if stored.ReplyToMessageID > 0 && (u.Role == users.RoleAdmin || u.Role == users.RoleAdministrator) {
+		doneText += "\nОтвет также отправлен автору исходного сообщения, если это мастер."
+	}
+
+	doneText += "\n\nМожно отправить следующее сообщение или нажать «Отменить»."
+
+	doneMsg := tgbotapi.NewMessage(chatID, doneText)
 	doneMsg.ReplyMarkup = adminChatCancelKeyboard()
 	b.send(doneMsg)
 }
@@ -273,4 +285,43 @@ func (b *Bot) sendAdminChatHistoryMedia(chatID int64, m *adminchat.Message) {
 
 	b.send(tgbotapi.NewMessage(chatID, header))
 	b.sendAdminChatPayload(chatID, m)
+}
+
+func (b *Bot) forwardAdminReplyToOriginalSender(ctx context.Context, stored *adminchat.Message, sender *users.User) {
+	if stored == nil || stored.ReplyToMessageID <= 0 {
+		return
+	}
+
+	if sender == nil || sender.Role != users.RoleAdmin && sender.Role != users.RoleAdministrator {
+		return
+	}
+
+	parent, err := b.adminChatRepo.GetByID(ctx, stored.ReplyToMessageID)
+	if err != nil || parent == nil {
+		return
+	}
+
+	if parent.SenderTelegramID == 0 || parent.SenderTelegramID == stored.SenderTelegramID {
+		return
+	}
+
+	parentRole := users.Role(parent.SenderRole)
+	if parentRole != users.RoleMaster {
+		return
+	}
+
+	adminName := strings.TrimSpace(stored.SenderUsername)
+	if adminName == "" {
+		adminName = fmt.Sprintf("id %d", stored.SenderTelegramID)
+	}
+
+	header := fmt.Sprintf(
+		"💬 Ответ администратора на ваше сообщение #%d\nОт: %s\nТип: %s",
+		parent.ID,
+		adminName,
+		adminChatMessageTypeLabel(stored.MessageType),
+	)
+
+	b.send(tgbotapi.NewMessage(parent.SenderTelegramID, header))
+	b.sendAdminChatPayload(parent.SenderTelegramID, stored)
 }
