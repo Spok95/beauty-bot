@@ -47,10 +47,7 @@ func (b *Bot) showStockItem(ctx context.Context, chatID int64, editMsgID int, wh
 		navKeyboard(true, true).InlineKeyboard[0],
 	)
 
-	matName := m.Name
-	if m.Brand != "" {
-		matName = fmt.Sprintf("%s / %s", m.Brand, m.Name)
-	}
+	matName := materialDisplayName(m.Brand, m.Name)
 
 	text := fmt.Sprintf(
 		"Склад: %s\nМатериал: %s\nОстаток: %.3f %s",
@@ -165,10 +162,7 @@ func (b *Bot) showStockMaterialList(ctx context.Context, chatID int64, editMsgID
 	}
 	rows := [][]tgbotapi.InlineKeyboardButton{}
 	for _, it := range items {
-		name := it.Name
-		if it.Brand != "" {
-			name = fmt.Sprintf("%s / %s", it.Brand, it.Name)
-		}
+		name := materialDisplayName(it.Brand, it.Name)
 		label := fmt.Sprintf("%s: %d %s", name, it.Balance, it.Unit)
 		if it.Unit == materials.UnitG {
 			if it.Balance <= 0 {
@@ -377,6 +371,18 @@ func (b *Bot) handleStocksImportExcel(ctx context.Context, chatID int64, u *user
 		if err != nil {
 			b.send(tgbotapi.NewMessage(chatID,
 				fmt.Sprintf("Ошибка в строке %d: некорректный material_id (%q).", i+1, matIDStr)))
+			return
+		}
+
+		allowed, err := b.materials.IsMaterialAllowedInWarehouse(ctx, warehouseID, matID)
+		if err != nil {
+			b.send(tgbotapi.NewMessage(chatID,
+				fmt.Sprintf("Ошибка проверки материала в строке %d.", i+1)))
+			return
+		}
+		if !allowed {
+			b.send(tgbotapi.NewMessage(chatID,
+				fmt.Sprintf("Ошибка в строке %d: материал %d не относится к категориям склада %d.", i+1, matID, warehouseID)))
 			return
 		}
 

@@ -25,21 +25,77 @@ func (b *Bot) showCategoryMenu(chatID int64, editMsgID *int) {
 }
 
 func (b *Bot) showCategoryList(ctx context.Context, chatID int64, editMsgID int) {
+	b.showCategoryListPage(ctx, chatID, editMsgID, 0)
+}
+
+func (b *Bot) showCategoryListPage(ctx context.Context, chatID int64, editMsgID int, page int) {
 	items, err := b.catalog.ListCategories(ctx)
 	if err != nil {
 		b.editTextAndClear(chatID, editMsgID, "Ошибка загрузки категорий")
 		return
 	}
+
+	if len(items) == 0 {
+		b.editTextAndClear(chatID, editMsgID, "Категорий пока нет.")
+		return
+	}
+
+	totalPages := (len(items) + materialSearchPageSize - 1) / materialSearchPageSize
+
+	if page < 0 {
+		page = 0
+	}
+	if page >= totalPages {
+		page = totalPages - 1
+	}
+
+	start := page * materialSearchPageSize
+	end := start + materialSearchPageSize
+	if end > len(items) {
+		end = len(items)
+	}
+
 	rows := [][]tgbotapi.InlineKeyboardButton{}
-	for _, c := range items {
+
+	for _, c := range items[start:end] {
 		label := fmt.Sprintf("%s %s", badge(c.Active), c.Name)
 		rows = append(rows, tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData(label, fmt.Sprintf("adm:cat:menu:%d", c.ID)),
 		))
 	}
+
+	if totalPages > 1 {
+		pager := []tgbotapi.InlineKeyboardButton{}
+
+		if page > 0 {
+			pager = append(pager,
+				tgbotapi.NewInlineKeyboardButtonData("⬅️", fmt.Sprintf("adm:cat:list:page:%d", page-1)),
+			)
+		} else {
+			pager = append(pager, tgbotapi.NewInlineKeyboardButtonData(" ", "noop"))
+		}
+
+		pager = append(pager,
+			tgbotapi.NewInlineKeyboardButtonData(fmt.Sprintf("%d/%d", page+1, totalPages), "noop"),
+		)
+
+		if page < totalPages-1 {
+			pager = append(pager,
+				tgbotapi.NewInlineKeyboardButtonData("➡️", fmt.Sprintf("adm:cat:list:page:%d", page+1)),
+			)
+		} else {
+			pager = append(pager, tgbotapi.NewInlineKeyboardButtonData(" ", "noop"))
+		}
+
+		rows = append(rows, pager)
+	}
+
 	rows = append(rows, navKeyboard(true, true).InlineKeyboard[0])
+
 	kb := tgbotapi.NewInlineKeyboardMarkup(rows...)
-	b.send(tgbotapi.NewEditMessageTextAndMarkup(chatID, editMsgID, "Список категорий:", kb))
+	text := fmt.Sprintf("Список категорий:\n\nСтраница: %d/%d", page+1, totalPages)
+
+	b.send(tgbotapi.NewEditMessageTextAndMarkup(chatID, editMsgID, text, kb))
 }
 
 func (b *Bot) showCategoryItemMenu(ctx context.Context, chatID int64, editMsgID int, id int64) {
