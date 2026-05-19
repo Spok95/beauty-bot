@@ -1933,9 +1933,20 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 				tgbotapi.NewInlineKeyboardButtonData("⛔ Отклонить", fmt.Sprintf("reject:%d", cb.From.ID)),
 			),
 		)
-		m := tgbotapi.NewMessage(b.adminChat, text)
-		m.ReplyMarkup = kb
-		b.send(m)
+		sent := false
+
+		for adminID := range b.adminIDs {
+			m := tgbotapi.NewMessage(adminID, text)
+			m.ReplyMarkup = kb
+			b.send(m)
+			sent = true
+		}
+
+		if !sent && b.adminChat != 0 {
+			m := tgbotapi.NewMessage(b.adminChat, text)
+			m.ReplyMarkup = kb
+			b.send(m)
+		}
 		_ = b.answerCallback(cb, "Отправлено", false)
 		return
 
