@@ -437,7 +437,7 @@ func (b *Bot) maybeNotifyLowOrNegative(ctx context.Context, _ int64, whID, matID
 	name := fmt.Sprintf("ID:%d", matID)
 	unit := "g"
 	if m != nil {
-		name = m.Name
+		name = materialDisplayName(m.Brand, m.Name)
 		if s := string(m.Unit); s != "" {
 			unit = s
 		}

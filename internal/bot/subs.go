@@ -193,15 +193,15 @@ func (b *Bot) notifyLowOrNegativeBatch(ctx context.Context, pairs [][2]int64) {
 		switch m.Unit {
 		case "g":
 			if bal <= 0 {
-				warnLine = fmt.Sprintf("— %s — закончились.", m.Name)
+				warnLine = fmt.Sprintf("— %s — закончились.", materialDisplayName(m.Brand, m.Name))
 			} else if bal < lowStockThresholdGr {
-				warnLine = fmt.Sprintf("— %s — %.0f g — мало", m.Name, bal)
+				warnLine = fmt.Sprintf("— %s — %.0f g — мало", materialDisplayName(m.Brand, m.Name), bal)
 			}
 		case "pcs":
 			if bal <= 0 {
-				warnLine = fmt.Sprintf("— %s — закончились.", m.Name)
+				warnLine = fmt.Sprintf("— %s — закончились.", materialDisplayName(m.Brand, m.Name))
 			} else if bal < lowStockThresholdPcs {
-				warnLine = fmt.Sprintf("— %s — %.0f шт — мало", m.Name, bal)
+				warnLine = fmt.Sprintf("— %s — %.0f шт — мало", materialDisplayName(m.Brand, m.Name), bal)
 			}
 		default:
 			// прочие единицы — без алертов
