@@ -88,16 +88,9 @@ func (b *Bot) showStockExportPickWarehouse(ctx context.Context, chatID int64, ed
 		return
 	}
 
-	u, _ := b.users.GetByTelegramID(ctx, chatID)
-	administrator := u != nil && u.Status == users.StatusApproved && u.Role == users.RoleAdministrator
-
 	rows := [][]tgbotapi.InlineKeyboardButton{}
 	for _, w := range ws {
 		if !w.Active {
-			continue
-		}
-		if administrator && w.Type != catalog.WHTClientService {
-			// администратор салона видит только клиентский склад
 			continue
 		}
 		rows = append(rows, tgbotapi.NewInlineKeyboardRow(
@@ -128,15 +121,9 @@ func (b *Bot) showStockWarehouseList(ctx context.Context, chatID int64, editMsgI
 		b.send(tgbotapi.NewMessage(chatID, "Ошибка загрузки складов"))
 		return
 	}
-	u, _ := b.users.GetByTelegramID(ctx, chatID)
-	salonAdmin := u != nil && u.Status == users.StatusApproved && u.Role == users.RoleAdministrator
-
 	rows := [][]tgbotapi.InlineKeyboardButton{}
 	for _, w := range ws {
 		if !w.Active {
-			continue
-		}
-		if salonAdmin && w.Type != catalog.WHTClientService {
 			continue
 		}
 		rows = append(rows, tgbotapi.NewInlineKeyboardRow(
@@ -646,10 +633,8 @@ func warehouseTypeLabel(t catalog.WarehouseType) string {
 	switch t {
 	case catalog.WHTConsumables:
 		return "расходники"
-	case catalog.WHTClientService:
-		return "клиентский"
 	case catalog.WHTOther:
-		return "прочий"
+		return "прочие"
 	default:
 		return string(t)
 	}

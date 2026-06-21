@@ -441,10 +441,7 @@ func (b *Bot) handleStateMessage(ctx context.Context, msg *tgbotapi.Message) {
 		kb := tgbotapi.NewInlineKeyboardMarkup(
 			tgbotapi.NewInlineKeyboardRow(
 				tgbotapi.NewInlineKeyboardButtonData("Расходники", "adm:wh:type:consumables"),
-				tgbotapi.NewInlineKeyboardButtonData("Клиентский", "adm:wh:type:client_service"),
-			),
-			tgbotapi.NewInlineKeyboardRow(
-				tgbotapi.NewInlineKeyboardButtonData("Прочий", "adm:wh:type:other"),
+				tgbotapi.NewInlineKeyboardButtonData("Прочие", "adm:wh:type:other"),
 			),
 			navKeyboard(true, true).InlineKeyboard[0],
 		)
@@ -2150,8 +2147,6 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 		switch tStr {
 		case string(catalog.WHTConsumables):
 			t = catalog.WHTConsumables
-		case string(catalog.WHTClientService):
-			t = catalog.WHTClientService
 		case string(catalog.WHTOther):
 			t = catalog.WHTOther
 		default:
