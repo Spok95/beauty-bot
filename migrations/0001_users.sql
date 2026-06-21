@@ -17,7 +17,7 @@ CREATE INDEX IF NOT EXISTS idx_users_role ON users(role);
 CREATE TABLE IF NOT EXISTS warehouses (
                                           id         BIGSERIAL PRIMARY KEY,
                                           name       TEXT NOT NULL UNIQUE,
-                                          type       TEXT NOT NULL CHECK (type IN ('consumables','client_service','other')),
+                                          type       TEXT NOT NULL CHECK (type IN ('consumables','other')),
                                           active     BOOLEAN NOT NULL DEFAULT TRUE,
                                           created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );

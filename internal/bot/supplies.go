@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/Spok95/beauty-bot/internal/dialog"
-	"github.com/Spok95/beauty-bot/internal/domain/catalog"
 	"github.com/Spok95/beauty-bot/internal/domain/users"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"github.com/xuri/excelize/v2"
@@ -95,15 +94,9 @@ func (b *Bot) showSuppliesPickWarehouse(ctx context.Context, chatID int64, editM
 		b.editTextAndClear(chatID, *editMsgID, "Ошибка загрузки складов")
 		return
 	}
-	u, _ := b.users.GetByTelegramID(ctx, chatID)
-	salonAdmin := u != nil && u.Status == users.StatusApproved && u.Role == users.RoleAdministrator
-
 	rows := [][]tgbotapi.InlineKeyboardButton{}
 	for _, w := range ws {
 		if !w.Active {
-			continue
-		}
-		if salonAdmin && w.Type != catalog.WHTClientService {
 			continue
 		}
 		rows = append(rows, tgbotapi.NewInlineKeyboardRow(
@@ -125,15 +118,9 @@ func (b *Bot) showSuppliesExportPickWarehouse(ctx context.Context, chatID int64,
 		}
 		return
 	}
-	u, _ := b.users.GetByTelegramID(ctx, chatID)
-	salonAdmin := u != nil && u.Status == users.StatusApproved && u.Role == users.RoleAdministrator
-
 	rows := [][]tgbotapi.InlineKeyboardButton{}
 	for _, w := range ws {
 		if !w.Active {
-			continue
-		}
-		if salonAdmin && w.Type != catalog.WHTClientService {
 			continue
 		}
 		rows = append(rows, tgbotapi.NewInlineKeyboardRow(

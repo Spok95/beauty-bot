@@ -5,9 +5,8 @@ import "time"
 type WarehouseType string
 
 const (
-	WHTConsumables   WarehouseType = "consumables"    // склад расходников
-	WHTClientService WarehouseType = "client_service" // склад клиентского обслуживания
-	WHTOther         WarehouseType = "other"          // прочий склад
+	WHTConsumables WarehouseType = "consumables" // склад расходников
+	WHTOther       WarehouseType = "other"       // прочий склад
 )
 
 type Warehouse struct {

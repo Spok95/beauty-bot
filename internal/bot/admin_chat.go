@@ -56,7 +56,7 @@ func (b *Bot) handleAdminChatMessage(ctx context.Context, msg *tgbotapi.Message)
 		_ = b.states.Set(ctx, chatID, dialog.StateChatAdmin, st.Payload)
 	}
 
-	recipients := b.adminChatRecipients(msg.Chat.ID)
+	recipients := b.adminChatRecipients(ctx, msg.Chat.ID)
 	if len(recipients) == 0 {
 		b.send(tgbotapi.NewMessage(chatID,
 			"Сообщение сохранено, но нет других администраторов для пересылки."))
@@ -78,7 +78,7 @@ func (b *Bot) handleAdminChatMessage(ctx context.Context, msg *tgbotapi.Message)
 	)
 
 	if stored.ReplyToMessageID > 0 && (u.Role == users.RoleAdmin || u.Role == users.RoleAdministrator) {
-		doneText += "\nОтвет также отправлен автору исходного сообщения, если это мастер."
+		doneText += "\nОтвет также отправлен автору исходного сообщения."
 	}
 
 	doneText += "\n\nМожно отправить следующее сообщение или нажать «Отменить»."
@@ -149,14 +149,37 @@ func buildAdminChatInput(msg *tgbotapi.Message, u *users.User) adminchat.CreateM
 	return in
 }
 
-func (b *Bot) adminChatRecipients(senderChatID int64) []int64 {
-	out := make([]int64, 0, len(b.adminIDs))
+func (b *Bot) adminChatRecipients(ctx context.Context, senderChatID int64) []int64 {
+	seen := map[int64]struct{}{}
+	out := []int64{}
+
+	add := func(tgID int64) {
+		if tgID == 0 || tgID == senderChatID {
+			return
+		}
+
+		if _, ok := seen[tgID]; ok {
+			return
+		}
+
+		seen[tgID] = struct{}{}
+		out = append(out, tgID)
+	}
 
 	for adminID := range b.adminIDs {
-		if adminID == senderChatID {
-			continue
+		add(adminID)
+	}
+
+	if admins, err := b.users.ListByRole(ctx, users.RoleAdmin, users.StatusApproved); err == nil {
+		for _, u := range admins {
+			add(u.TelegramID)
 		}
-		out = append(out, adminID)
+	}
+
+	if administrators, err := b.users.ListByRole(ctx, users.RoleAdministrator, users.StatusApproved); err == nil {
+		for _, u := range administrators {
+			add(u.TelegramID)
+		}
 	}
 
 	return out
@@ -306,7 +329,9 @@ func (b *Bot) forwardAdminReplyToOriginalSender(ctx context.Context, stored *adm
 	}
 
 	parentRole := users.Role(parent.SenderRole)
-	if parentRole != users.RoleMaster {
+	if parentRole != users.RoleMaster &&
+		parentRole != users.RoleAdministrator &&
+		parentRole != users.RoleAdmin {
 		return
 	}
 

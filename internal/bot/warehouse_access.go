@@ -24,18 +24,10 @@ func (b *Bot) allowedWarehousesForUser(ctx context.Context, u *users.User) ([]ca
 		}
 
 		switch u.Role {
-		case users.RoleMaster:
+		case users.RoleMaster, users.RoleAdministrator, users.RoleAdmin:
 			if w.Type == catalog.WHTConsumables || w.Type == catalog.WHTOther {
 				out = append(out, w)
 			}
-
-		case users.RoleAdministrator:
-			if w.Type == catalog.WHTClientService {
-				out = append(out, w)
-			}
-
-		case users.RoleAdmin:
-			out = append(out, w)
 		}
 	}
 

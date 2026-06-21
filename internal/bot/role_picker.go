@@ -49,7 +49,7 @@ func (b *Bot) sendMenuForRole(chatID int64, role users.Role) {
 
 	case users.RoleAdministrator:
 		m := tgbotapi.NewMessage(chatID,
-			"Готово! Для работы со складом «Клиентский» используйте кнопки снизу.")
+			"Готово! Для работы со складами используйте кнопки снизу.")
 		m.ReplyMarkup = salonAdminReplyKeyboard()
 		b.send(m)
 
