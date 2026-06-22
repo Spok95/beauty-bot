@@ -43,6 +43,19 @@ func (b *Bot) calculateConsumptionReceiptPayload(
 		mats += float64(q) * price
 	}
 
+	if isConsumptionNoRent(payload) {
+		payload["with_sub"] = false
+		payload["mats_sum"] = mats
+		payload["mats_rounded"] = mats
+		payload["need_total"] = float64(0)
+		payload["rent_calc"] = float64(0)
+		payload["rent"] = float64(0)
+		payload["total"] = mats
+		payload["rent_parts"] = []map[string]any{}
+
+		return payload, "", nil
+	}
+
 	u, _ := b.users.GetByTelegramID(ctx, telegramID)
 
 	var metas []rentPartMeta

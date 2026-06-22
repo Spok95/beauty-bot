@@ -190,9 +190,9 @@ VALUES ('cabinet','day',FALSE,1,NULL,FALSE,1000,5500,6500);
 CREATE TABLE IF NOT EXISTS consumption_sessions (
                                                     id BIGSERIAL PRIMARY KEY,
                                                     user_id BIGINT NOT NULL REFERENCES users(id),
-                                                    place TEXT NOT NULL CHECK (place IN ('hall','cabinet')),
-                                                    unit  TEXT NOT NULL CHECK (unit IN ('hour','day')),
-                                                    qty INT NOT NULL CHECK (qty > 0),
+                                                    place TEXT NOT NULL CHECK (place IN ('hall','cabinet','no_rent')),
+                                                    unit  TEXT NOT NULL CHECK (unit IN ('hour','day','none')),
+                                                    qty INT NOT NULL CHECK (qty >= 0),
                                                     with_subscription BOOLEAN NOT NULL DEFAULT false,
                                                     materials_sum NUMERIC(12,2) NOT NULL DEFAULT 0,
                                                     rounded_materials_sum NUMERIC(12,2) NOT NULL DEFAULT 0,

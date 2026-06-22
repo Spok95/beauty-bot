@@ -904,16 +904,7 @@ func (b *Bot) handleStateMessage(ctx context.Context, msg *tgbotapi.Message) {
 		payload["comment"] = text
 		_ = b.states.Set(ctx, chatID, dialog.StateConsPlace, payload)
 
-		kb := tgbotapi.NewInlineKeyboardMarkup(
-			tgbotapi.NewInlineKeyboardRow(
-				tgbotapi.NewInlineKeyboardButtonData("Общий зал", "cons:place:hall"),
-				tgbotapi.NewInlineKeyboardButtonData("Кабинет", "cons:place:cabinet"),
-			),
-			navKeyboard(false, true).InlineKeyboard[0],
-		)
-		m := tgbotapi.NewMessage(chatID, "Выберите помещение:")
-		m.ReplyMarkup = kb
-		b.send(m)
+		b.showConsumptionRentModeStep(chatID, nil)
 		return
 
 	case dialog.StateConsFinalComment:
@@ -1571,15 +1562,15 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 		case dialog.StateConsQty:
 			// назад к выбору помещения
 			_ = b.states.Set(ctx, fromChat, dialog.StateConsPlace, st.Payload)
-			kb := tgbotapi.NewInlineKeyboardMarkup(
-				tgbotapi.NewInlineKeyboardRow(
-					tgbotapi.NewInlineKeyboardButtonData("Общий зал", "cons:place:hall"),
-					tgbotapi.NewInlineKeyboardButtonData("Кабинет", "cons:place:cabinet"),
-				),
-				navKeyboard(false, true).InlineKeyboard[0],
-			)
-			b.send(tgbotapi.NewEditMessageTextAndMarkup(fromChat, cb.Message.MessageID, "Выберите помещение:", kb))
+			b.showConsumptionPlaceStep(fromChat, &cb.Message.MessageID)
 		case dialog.StateConsCart:
+			if isConsumptionNoRent(st.Payload) {
+				// назад к выбору режима расхода
+				_ = b.states.Set(ctx, fromChat, dialog.StateConsPlace, st.Payload)
+				b.showConsumptionRentModeStep(fromChat, &cb.Message.MessageID)
+				return
+			}
+
 			// назад к вводу количества часов/дней
 			b.editTextWithNav(fromChat, cb.Message.MessageID, fmt.Sprintf("Введите количество (%s):", map[string]string{"hour": "часы", "day": "дни"}[st.Payload["unit"].(string)]))
 			_ = b.states.Set(ctx, fromChat, dialog.StateConsQty, st.Payload)
@@ -3070,16 +3061,47 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 		payload["comment"] = ""
 		_ = b.states.Set(ctx, fromChat, dialog.StateConsPlace, payload)
 
-		kb := tgbotapi.NewInlineKeyboardMarkup(
-			tgbotapi.NewInlineKeyboardRow(
-				tgbotapi.NewInlineKeyboardButtonData("Общий зал", "cons:place:hall"),
-				tgbotapi.NewInlineKeyboardButtonData("Кабинет", "cons:place:cabinet"),
-			),
-			navKeyboard(false, true).InlineKeyboard[0],
-		)
-		msg := tgbotapi.NewMessage(fromChat, "Выберите помещение:")
-		msg.ReplyMarkup = kb
-		b.send(msg)
+		b.showConsumptionRentModeStep(fromChat, nil)
+		_ = b.answerCallback(cb, "Ок", false)
+		return
+
+		// Выбор режима расхода: с арендой или без аренды
+	case data == "cons:rent:with":
+		st, _ := b.states.Get(ctx, fromChat)
+		payload := dialog.Payload{}
+		if st != nil && st.Payload != nil {
+			payload = st.Payload
+		}
+
+		delete(payload, "no_rent")
+		delete(payload, "place")
+		delete(payload, "unit")
+		delete(payload, "qty")
+		delete(payload, "with_sub")
+		delete(payload, "items")
+
+		_ = b.states.Set(ctx, fromChat, dialog.StateConsPlace, payload)
+		b.showConsumptionPlaceStep(fromChat, &cb.Message.MessageID)
+		_ = b.answerCallback(cb, "Ок", false)
+		return
+
+	case data == "cons:rent:none":
+		st, _ := b.states.Get(ctx, fromChat)
+		payload := dialog.Payload{}
+		if st != nil && st.Payload != nil {
+			payload = st.Payload
+		}
+
+		payload["no_rent"] = true
+		payload["place"] = "no_rent"
+		payload["unit"] = "none"
+		payload["qty"] = float64(0)
+		payload["with_sub"] = false
+		payload["items"] = []map[string]any{}
+
+		_ = b.states.Set(ctx, fromChat, dialog.StateConsCart, payload)
+		b.showConsCart(ctx, fromChat, &cb.Message.MessageID, "no_rent", "none", 0, []map[string]any{})
+
 		_ = b.answerCallback(cb, "Ок", false)
 		return
 
@@ -3110,6 +3132,8 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 			"unit":     unit,
 			"with_sub": withSub,
 		}
+
+		delete(payload, "no_rent")
 
 		if st != nil && st.Payload != nil {
 			if v, ok := st.Payload["warehouse_id"]; ok {
@@ -3475,6 +3499,7 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 		rounded := st.Payload["mats_rounded"].(float64)
 		rent := st.Payload["rent"].(float64)
 		total := st.Payload["total"].(float64)
+		noRent := isConsumptionNoRent(st.Payload)
 
 		var comment string
 		if v, ok := st.Payload["comment"].(string); ok {
@@ -3502,6 +3527,10 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 		// создаём сессию + позиции
 		sessionPayload := map[string]any{
 			"items_count": len(items),
+		}
+
+		if noRent {
+			sessionPayload["no_rent"] = true
 		}
 
 		if warehouseID := payloadInt64(st.Payload["warehouse_id"]); warehouseID > 0 {
@@ -3655,6 +3684,9 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 		if b.payments != nil {
 			// здесь НЕ используем placeRU/unitRU, только тех.описание
 			desc := fmt.Sprintf("Расход/аренда: place=%s, qty=%d %s", place, qty, unit)
+			if noRent {
+				desc = "Расход материалов без аренды"
+			}
 
 			if url, err := b.payments.CreatePayment(ctx, invoiceID, total, desc); err != nil {
 				b.log.Error("failed to create payment link",
@@ -3689,7 +3721,11 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 			} else {
 				_, _ = fmt.Fprintf(&sb, "Мастер: @%s (id %d)\n", cb.From.UserName, cb.From.ID)
 			}
-			_, _ = fmt.Fprintf(&sb, "Помещение: %s\nКол-во: %d %s\n", placeRU[place], qty, unitRU[unit])
+			if noRent {
+				_, _ = fmt.Fprintf(&sb, "Тип: без аренды\n")
+			} else {
+				_, _ = fmt.Fprintf(&sb, "Помещение: %s\nКол-во: %d %s\n", placeRU[place], qty, unitRU[unit])
+			}
 			if comment != "" {
 				_, _ = fmt.Fprintf(&sb, "Комментарий: %s\n", comment)
 			}
@@ -3715,8 +3751,13 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 			}
 
 			// финансы: округлённая сумма материалов, аренда, итого — у нас уже посчитаны
-			_, _ = fmt.Fprintf(&sb, "\nМатериалы (факт): %.2f ₽, округл.: %.2f ₽\nАренда: %.2f ₽\nИтого: %.2f ₽",
-				mats, rounded, rent, total)
+			if noRent {
+				_, _ = fmt.Fprintf(&sb, "\nМатериалы: %.2f ₽\nАренда: без аренды\nИтого: %.2f ₽",
+					mats, total)
+			} else {
+				_, _ = fmt.Fprintf(&sb, "\nМатериалы (факт): %.2f ₽, округл.: %.2f ₽\nАренда: %.2f ₽\nИтого: %.2f ₽",
+					mats, rounded, rent, total)
+			}
 
 			b.send(tgbotapi.NewMessage(b.adminChat, sb.String()))
 		}
