@@ -42,6 +42,8 @@ func (b *Bot) buildConsumptionReceipt(ctx context.Context, payload dialog.Payloa
 		withSub = v
 	}
 
+	noRent := isConsumptionNoRent(payload)
+
 	comment := ""
 	if v, ok := payload["comment"].(string); ok {
 		comment = strings.TrimSpace(v)
@@ -69,8 +71,12 @@ func (b *Bot) buildConsumptionReceipt(ctx context.Context, payload dialog.Payloa
 	}
 
 	lines = append(lines, "Параметры записи:")
-	lines = append(lines, fmt.Sprintf("• Помещение: %s", placeRU[place]))
-	lines = append(lines, fmt.Sprintf("• Количество: %d %s", qty, unitRU[unit]))
+	if noRent {
+		lines = append(lines, "• Тип: без аренды")
+	} else {
+		lines = append(lines, fmt.Sprintf("• Помещение: %s", placeRU[place]))
+		lines = append(lines, fmt.Sprintf("• Количество: %d %s", qty, unitRU[unit]))
+	}
 
 	if comment != "" {
 		lines = append(lines, fmt.Sprintf("• Комментарий: %s", comment))
@@ -80,7 +86,9 @@ func (b *Bot) buildConsumptionReceipt(ctx context.Context, payload dialog.Payloa
 		lines = append(lines, fmt.Sprintf("• Комментарий мастера: %s", finalComment))
 	}
 
-	if withSub {
+	if noRent {
+		lines = append(lines, "• Абонемент: не используется")
+	} else if withSub {
 		lines = append(lines, "• Абонемент: да")
 	} else {
 		lines = append(lines, "• Абонемент: нет")
@@ -118,7 +126,9 @@ func (b *Bot) buildConsumptionReceipt(ctx context.Context, payload dialog.Payloa
 	lines = append(lines, "Аренда:")
 
 	rentParts := parseRentParts(payload["rent_parts"])
-	if len(rentParts) == 0 {
+	if noRent {
+		lines = append(lines, "• Без аренды")
+	} else if len(rentParts) == 0 {
 		lines = append(lines, fmt.Sprintf("• Аренда всего: %.2f ₽", rent))
 	} else {
 		for _, part := range rentParts {
@@ -190,7 +200,11 @@ func (b *Bot) buildConsumptionReceipt(ctx context.Context, payload dialog.Payloa
 	if matsRounded != matsSum {
 		lines = append(lines, fmt.Sprintf("• В зачёт аренды: %.2f ₽", matsRounded))
 	}
-	lines = append(lines, fmt.Sprintf("• Аренда: %.2f ₽", rent))
+	if noRent {
+		lines = append(lines, "• Аренда: без аренды")
+	} else {
+		lines = append(lines, fmt.Sprintf("• Аренда: %.2f ₽", rent))
+	}
 	lines = append(lines, fmt.Sprintf("• Всего к оплате: %.2f ₽", total))
 
 	if warn := buildSubscriptionReceiptWarning(payload); warn != "" {
@@ -198,6 +212,21 @@ func (b *Bot) buildConsumptionReceipt(ctx context.Context, payload dialog.Payloa
 	}
 
 	return strings.Join(lines, "\n")
+}
+
+func isConsumptionNoRent(payload dialog.Payload) bool {
+	if payload == nil {
+		return false
+	}
+
+	if v, ok := payload["no_rent"].(bool); ok && v {
+		return true
+	}
+
+	place, _ := payload["place"].(string)
+	unit, _ := payload["unit"].(string)
+
+	return place == "no_rent" || unit == "none"
 }
 
 func materialUnitLabel(unit string) string {
@@ -266,6 +295,10 @@ func payloadInt(payload map[string]any, key string) int {
 }
 
 func buildSubscriptionReceiptWarning(payload dialog.Payload) string {
+	if isConsumptionNoRent(payload) {
+		return ""
+	}
+
 	withSub := false
 	if v, ok := payload["with_sub"].(bool); ok {
 		withSub = v

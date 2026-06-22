@@ -132,7 +132,7 @@ type rentPartMeta struct {
 }
 
 func (b *Bot) showConsCart(ctx context.Context, chatID int64, editMsgID *int, place, unit string, qty int, items []map[string]any) {
-	lines := []string{fmt.Sprintf("Расход/Аренда: %s, %d %s", map[string]string{"hall": "Зал", "cabinet": "Кабинет"}[place], qty, map[string]string{"hour": "ч", "day": "дн"}[unit])}
+	lines := []string{consumptionCartTitle(place, unit, qty)}
 	var sum float64
 	for _, it := range items {
 		matID := int64(it["mat_id"].(float64))

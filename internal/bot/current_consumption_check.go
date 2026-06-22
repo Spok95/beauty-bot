@@ -41,7 +41,7 @@ func (b *Bot) showCurrentConsumptionCheck(ctx context.Context, chatID int64, tel
 			nil,
 			payload["place"].(string),
 			payload["unit"].(string),
-			int(payload["qty"].(float64)),
+			payloadInt(payload, "qty"),
 			items,
 		)
 	}
