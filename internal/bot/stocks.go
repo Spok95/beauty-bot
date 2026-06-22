@@ -507,19 +507,6 @@ func (b *Bot) notifyStockRecipients(ctx context.Context, text string) {
 	}
 }
 
-func (b *Bot) getConsumablesWarehouseID(ctx context.Context) (int64, error) {
-	ws, err := b.catalog.ListWarehouses(ctx)
-	if err != nil {
-		return 0, err
-	}
-	for _, w := range ws {
-		if w.Active && w.Type == "consumables" {
-			return w.ID, nil
-		}
-	}
-	return 0, fmt.Errorf("склад Расходники не найден/не активен")
-}
-
 // exportWarehouseStocksExcel выгружает текущие остатки склада в Excel.
 func (b *Bot) exportWarehouseStocksExcel(ctx context.Context, chatID int64, msgID int, whID int64) {
 	// 1) склад
