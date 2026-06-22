@@ -124,7 +124,9 @@ func (b *Bot) handleStateMessage(ctx context.Context, msg *tgbotapi.Message) {
 		if u == nil || u.Status != users.StatusApproved || u.Role != users.RoleMaster {
 			return
 		}
-		b.showConsumptionWarehousePick(ctx, chatID, nil, u)
+
+		_ = b.states.Set(ctx, chatID, dialog.StateConsComment, dialog.Payload{})
+		b.showConsumptionCommentStep(chatID, nil)
 		return
 	}
 
@@ -391,17 +393,9 @@ func (b *Bot) handleStateMessage(ctx context.Context, msg *tgbotapi.Message) {
 			b.send(tgbotapi.NewMessage(chatID, "Доступ запрещён."))
 			return
 		}
-		_ = b.states.Set(ctx, chatID, dialog.StateConsPlace, dialog.Payload{})
-		kb := tgbotapi.NewInlineKeyboardMarkup(
-			tgbotapi.NewInlineKeyboardRow(
-				tgbotapi.NewInlineKeyboardButtonData("Общий зал", "cons:place:hall"),
-				tgbotapi.NewInlineKeyboardButtonData("Кабинет", "cons:place:cabinet"),
-			),
-			navKeyboard(false, true).InlineKeyboard[0],
-		)
-		m := tgbotapi.NewMessage(chatID, "Выберите помещение:")
-		m.ReplyMarkup = kb
-		b.send(m)
+
+		_ = b.states.Set(ctx, chatID, dialog.StateConsComment, dialog.Payload{})
+		b.showConsumptionCommentStep(chatID, nil)
 		return
 	}
 
@@ -1589,6 +1583,15 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 			// назад к вводу количества часов/дней
 			b.editTextWithNav(fromChat, cb.Message.MessageID, fmt.Sprintf("Введите количество (%s):", map[string]string{"hour": "часы", "day": "дни"}[st.Payload["unit"].(string)]))
 			_ = b.states.Set(ctx, fromChat, dialog.StateConsQty, st.Payload)
+		case dialog.StateConsWhPick:
+			// назад — корзина
+			items := b.consParseItems(st.Payload["items"])
+			_ = b.states.Set(ctx, fromChat, dialog.StateConsCart, st.Payload)
+			b.showConsCart(ctx, fromChat, &cb.Message.MessageID,
+				st.Payload["place"].(string),
+				st.Payload["unit"].(string),
+				int(st.Payload["qty"].(float64)),
+				items)
 		case dialog.StateConsMatSearch:
 			// назад — корзина
 			items := b.consParseItems(st.Payload["items"])
@@ -3027,14 +3030,29 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 			return
 		}
 
-		payload := dialog.Payload{
-			"warehouse_id":   float64(selected.ID),
-			"warehouse_name": selected.Name,
+		st, _ := b.states.Get(ctx, fromChat)
+		payload := dialog.Payload{}
+		if st != nil && st.Payload != nil {
+			payload = st.Payload
 		}
 
-		_ = b.states.Set(ctx, fromChat, dialog.StateConsComment, payload)
+		payload["warehouse_id"] = float64(selected.ID)
+		payload["warehouse_name"] = selected.Name
 
-		b.showConsumptionCommentStep(fromChat, &cb.Message.MessageID)
+		delete(payload, "cons_pick_level")
+		delete(payload, "cons_cat_id")
+		delete(payload, "cons_cat_name")
+		delete(payload, "cons_brand_id")
+		delete(payload, "cons_brand_name")
+		delete(payload, "cons_brand_ids")
+		delete(payload, "cons_brand_names")
+		delete(payload, "mat_id")
+		delete(payload, "cons_search_loop")
+		delete(payload, "cons_search_query")
+		delete(payload, "cons_search_page")
+
+		_ = b.states.Set(ctx, fromChat, dialog.StateConsMatSearch, payload)
+		b.showConsMaterialSearchMenu(fromChat, cb.Message.MessageID)
 
 		_ = b.answerCallback(cb, "Ок", false)
 		return
@@ -3130,9 +3148,15 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 		delete(st.Payload, "cons_search_query")
 		delete(st.Payload, "cons_search_page")
 
-		_ = b.states.Set(ctx, fromChat, dialog.StateConsMatSearch, st.Payload)
+		_ = b.states.Set(ctx, fromChat, dialog.StateConsWhPick, st.Payload)
 
-		b.showConsMaterialSearchMenu(fromChat, cb.Message.MessageID)
+		u, err := b.users.GetByTelegramID(ctx, cb.From.ID)
+		if err != nil || u == nil || u.Status != users.StatusApproved {
+			_ = b.answerCallback(cb, "Нет доступа", true)
+			return
+		}
+
+		b.showConsumptionWarehousePick(ctx, fromChat, &cb.Message.MessageID, u)
 
 		_ = b.answerCallback(cb, "Ок", false)
 		return
