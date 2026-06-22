@@ -46,15 +46,24 @@ func (b *Bot) showConsumptionWarehousePick(ctx context.Context, chatID int64, ed
 		return
 	}
 
+	st, _ := b.states.Get(ctx, chatID)
+	payload := dialog.Payload{}
+	if st != nil && st.Payload != nil {
+		payload = st.Payload
+	}
+
 	if len(warehouses) == 1 {
 		w := warehouses[0]
-		payload := dialog.Payload{
-			"warehouse_id":   float64(w.ID),
-			"warehouse_name": w.Name,
-		}
+		payload["warehouse_id"] = float64(w.ID)
+		payload["warehouse_name"] = w.Name
 
-		_ = b.states.Set(ctx, chatID, dialog.StateConsComment, payload)
-		b.showConsumptionCommentStep(chatID, editMsgID)
+		_ = b.states.Set(ctx, chatID, dialog.StateConsMatSearch, payload)
+		if editMsgID != nil {
+			b.showConsMaterialSearchMenu(chatID, *editMsgID)
+		} else {
+			msg := tgbotapi.NewMessage(chatID, fmt.Sprintf("Склад: %s. Теперь выберите способ поиска материала.", w.Name))
+			b.send(msg)
+		}
 		return
 	}
 
@@ -70,16 +79,17 @@ func (b *Bot) showConsumptionWarehousePick(ctx context.Context, chatID int64, ed
 	rows = append(rows, navKeyboard(false, true).InlineKeyboard[0])
 
 	kb := tgbotapi.NewInlineKeyboardMarkup(rows...)
+	text := "Выберите склад для добавления материала:"
 
 	if editMsgID != nil {
-		b.send(tgbotapi.NewEditMessageTextAndMarkup(chatID, *editMsgID, "Выберите склад:", kb))
+		b.send(tgbotapi.NewEditMessageTextAndMarkup(chatID, *editMsgID, text, kb))
 	} else {
-		msg := tgbotapi.NewMessage(chatID, "Выберите склад:")
+		msg := tgbotapi.NewMessage(chatID, text)
 		msg.ReplyMarkup = kb
 		b.send(msg)
 	}
 
-	_ = b.states.Set(ctx, chatID, dialog.StateConsWhPick, dialog.Payload{})
+	_ = b.states.Set(ctx, chatID, dialog.StateConsWhPick, payload)
 }
 
 func (b *Bot) showConsumptionCommentStep(chatID int64, editMsgID *int) {
