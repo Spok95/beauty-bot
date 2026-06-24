@@ -3831,8 +3831,10 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 		}
 
 		b.notifyLowOrNegativeBatch(ctx, pairs)
-		// уведомление админу о подтверждённой сессии расхода/аренды
-		if b.adminChat != 0 {
+		// уведомление admin о подтверждённой сессии расхода/аренды
+		// Важно: это уведомление отправляем только пользователям с ролью admin.
+		// Роль administrator сюда не включаем.
+		if admins, err := b.users.ListByRole(ctx, users.RoleAdmin, users.StatusApproved); err == nil && len(admins) > 0 {
 			// кто подтвердил
 			u, _ := b.users.GetByTelegramID(ctx, cb.From.ID)
 
@@ -3885,7 +3887,20 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 					mats, rounded, rent, total)
 			}
 
-			b.send(tgbotapi.NewMessage(b.adminChat, sb.String()))
+			notificationText := sb.String()
+			seen := map[int64]struct{}{}
+			for _, admin := range admins {
+				if admin == nil || admin.TelegramID == 0 {
+					continue
+				}
+				if _, ok := seen[admin.TelegramID]; ok {
+					continue
+				}
+				seen[admin.TelegramID] = struct{}{}
+				b.send(tgbotapi.NewMessage(admin.TelegramID, notificationText))
+			}
+		} else if err != nil {
+			b.log.Error("failed to load admins for consumption notification", "err", err)
 		}
 
 		// сообщение мастеру о завершении расчёта
