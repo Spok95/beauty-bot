@@ -65,7 +65,11 @@ func hasConsumptionDraft(payload dialog.Payload) bool {
 	}
 
 	items := parsePayloadItems(payload["items"])
-	return len(items) > 0
+	if len(items) > 0 {
+		return true
+	}
+
+	return !isConsumptionNoRent(payload)
 }
 
 func parsePayloadItems(v any) []map[string]any {

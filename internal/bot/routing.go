@@ -3543,6 +3543,12 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 			return
 		}
 
+		items := b.consParseItems(st.Payload["items"])
+		if isConsumptionNoRent(st.Payload) && len(items) == 0 {
+			_ = b.answerCallback(cb, "Добавьте материал", true)
+			return
+		}
+
 		_ = b.states.Set(ctx, fromChat, dialog.StateConsFinalComment, st.Payload)
 
 		kb := tgbotapi.NewInlineKeyboardMarkup(
@@ -3650,9 +3656,10 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 			finalComment = v
 		}
 
-		// найдём склад (только с него списываем)
+		// Склад обязателен только если есть материалы для списания.
+		// Для сценария «аренда без материалов» склад не выбирается и не нужен.
 		whID := payloadInt64(st.Payload["warehouse_id"])
-		if whID <= 0 {
+		if len(items) > 0 && whID <= 0 {
 			b.editTextAndClear(fromChat, cb.Message.MessageID, "Склад не выбран. Начните расчёт заново.")
 			_ = b.answerCallback(cb, "Ошибка", true)
 			return
@@ -3877,6 +3884,9 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 
 			// материалы
 			_, _ = fmt.Fprintf(&sb, "Материалы:\n")
+			if len(items) == 0 {
+				_, _ = fmt.Fprintf(&sb, "• Материалы не внесены\n")
+			}
 			var matsSum float64
 			for _, it := range items {
 				matID := int64(it["mat_id"].(float64))
