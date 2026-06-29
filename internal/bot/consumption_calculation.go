@@ -34,6 +34,11 @@ func (b *Bot) calculateConsumptionReceiptPayload(
 
 	qty := int(qtyF)
 	items := b.consParseItems(itemsRaw)
+	noRent := isConsumptionNoRent(payload)
+
+	if noRent && len(items) == 0 {
+		return nil, "Для режима «Без аренды» добавьте хотя бы один материал.", fmt.Errorf("no-rent consumption without materials")
+	}
 
 	var mats float64
 	for _, it := range items {
@@ -43,7 +48,7 @@ func (b *Bot) calculateConsumptionReceiptPayload(
 		mats += float64(q) * price
 	}
 
-	if isConsumptionNoRent(payload) {
+	if noRent {
 		payload["with_sub"] = false
 		payload["mats_sum"] = mats
 		payload["mats_rounded"] = mats
