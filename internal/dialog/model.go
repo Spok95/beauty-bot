@@ -61,6 +61,7 @@ const (
 	StateConsWhPick       State = "cons_wh_pick"       // выбор склада для расхода
 	StateConsComment      State = "cons_comment"       // комментарий к сессии (дата/примечание)
 	StateConsPlace        State = "cons_place"         // выбор: зал/кабинет
+	StateConsStudioAmount State = "cons_studio_amount" // ввод итоговой суммы для студийного клиента
 	StateConsQty          State = "cons_qty"           // кол-во часов/дней (int)
 	StateConsMatSearch    State = "cons_mat_search"    // меню: выбор способа поиска материала
 	StateConsSearchByName State = "cons_search_name"   // ввод строки для поиска по названию

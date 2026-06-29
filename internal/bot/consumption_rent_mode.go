@@ -12,6 +12,9 @@ func (b *Bot) showConsumptionRentModeStep(chatID int64, editMsgID *int) {
 			tgbotapi.NewInlineKeyboardButtonData("С арендой", "cons:rent:with"),
 			tgbotapi.NewInlineKeyboardButtonData("Без аренды", "cons:rent:none"),
 		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("Студийный клиент", "cons:rent:studio"),
+		),
 		navKeyboard(false, true).InlineKeyboard[0],
 	)
 
@@ -46,7 +49,24 @@ func (b *Bot) showConsumptionPlaceStep(chatID int64, editMsgID *int) {
 	b.send(msg)
 }
 
+func (b *Bot) showConsumptionStudioAmountStep(chatID int64, editMsgID *int) {
+	text := "Введите итоговую сумму для студийного клиента, которую нужно указать в аренде.\n\nНапример: 1500"
+
+	if editMsgID != nil {
+		b.editTextWithNav(chatID, *editMsgID, text)
+		return
+	}
+
+	msg := tgbotapi.NewMessage(chatID, text)
+	msg.ReplyMarkup = navKeyboard(true, true)
+	b.send(msg)
+}
+
 func consumptionCartTitle(place, unit string, qty int) string {
+	if place == "studio_client" || unit == "studio_fee" {
+		return "Расход/Аренда: студийный клиент"
+	}
+
 	if place == "no_rent" || unit == "none" {
 		return "Расход материалов: без аренды"
 	}
