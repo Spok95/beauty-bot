@@ -5360,7 +5360,9 @@ func (b *Bot) buildCancelLastConsumptionText(ctx context.Context, session *consu
 	_, _ = fmt.Fprintf(&sb, "Последний расход/аренда #%d\n", session.ID)
 	_, _ = fmt.Fprintf(&sb, "Дата: %s\n", session.CreatedAt.Format("02.01.2006 15:04"))
 
-	if session.Place == "no_rent" {
+	if isConsumptionStudioClient(session.Payload) {
+		_, _ = fmt.Fprintf(&sb, "Тип: студийный клиент\n")
+	} else if session.Place == "no_rent" {
 		_, _ = fmt.Fprintf(&sb, "Тип: без аренды\n")
 	} else {
 		_, _ = fmt.Fprintf(&sb, "Помещение: %s\n", placeRU[session.Place])
@@ -5400,7 +5402,13 @@ func (b *Bot) buildCancelLastConsumptionText(ctx context.Context, session *consu
 		}
 	}
 
-	if session.Place == "no_rent" {
+	if isConsumptionStudioClient(session.Payload) {
+		_, _ = fmt.Fprintf(&sb, "\nМатериалы: %.2f ₽\nАренда: студийный клиент %.2f ₽\nИтого: %.2f ₽\n",
+			session.MaterialsSum,
+			session.Rent,
+			session.Total,
+		)
+	} else if session.Place == "no_rent" {
 		_, _ = fmt.Fprintf(&sb, "\nМатериалы: %.2f ₽\nАренда: без аренды\nИтого: %.2f ₽\n",
 			session.MaterialsSum,
 			session.Total,
