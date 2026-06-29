@@ -43,6 +43,7 @@ func (b *Bot) buildConsumptionReceipt(ctx context.Context, payload dialog.Payloa
 	}
 
 	noRent := isConsumptionNoRent(payload)
+	studioClient := isConsumptionStudioClient(payload)
 
 	comment := ""
 	if v, ok := payload["comment"].(string); ok {
@@ -71,7 +72,9 @@ func (b *Bot) buildConsumptionReceipt(ctx context.Context, payload dialog.Payloa
 	}
 
 	lines = append(lines, "Параметры записи:")
-	if noRent {
+	if studioClient {
+		lines = append(lines, "• Тип: студийный клиент")
+	} else if noRent {
 		lines = append(lines, "• Тип: без аренды")
 	} else {
 		lines = append(lines, fmt.Sprintf("• Помещение: %s", placeRU[place]))
@@ -86,7 +89,7 @@ func (b *Bot) buildConsumptionReceipt(ctx context.Context, payload dialog.Payloa
 		lines = append(lines, fmt.Sprintf("• Комментарий мастера: %s", finalComment))
 	}
 
-	if noRent {
+	if noRent || studioClient {
 		lines = append(lines, "• Абонемент: не используется")
 	} else if withSub {
 		lines = append(lines, "• Абонемент: да")
@@ -126,7 +129,9 @@ func (b *Bot) buildConsumptionReceipt(ctx context.Context, payload dialog.Payloa
 	lines = append(lines, "Аренда:")
 
 	rentParts := parseRentParts(payload["rent_parts"])
-	if noRent {
+	if studioClient {
+		lines = append(lines, fmt.Sprintf("• Студийный клиент — %.2f ₽", rent))
+	} else if noRent {
 		lines = append(lines, "• Без аренды")
 	} else if len(rentParts) == 0 {
 		lines = append(lines, fmt.Sprintf("• Аренда всего: %.2f ₽", rent))
@@ -200,7 +205,9 @@ func (b *Bot) buildConsumptionReceipt(ctx context.Context, payload dialog.Payloa
 	if matsRounded != matsSum {
 		lines = append(lines, fmt.Sprintf("• В зачёт аренды: %.2f ₽", matsRounded))
 	}
-	if noRent {
+	if studioClient {
+		lines = append(lines, fmt.Sprintf("• Аренда: %.2f ₽", rent))
+	} else if noRent {
 		lines = append(lines, "• Аренда: без аренды")
 	} else {
 		lines = append(lines, fmt.Sprintf("• Аренда: %.2f ₽", rent))
@@ -215,7 +222,7 @@ func (b *Bot) buildConsumptionReceipt(ctx context.Context, payload dialog.Payloa
 }
 
 func isConsumptionNoRent(payload dialog.Payload) bool {
-	if payload == nil {
+	if payload == nil || isConsumptionStudioClient(payload) {
 		return false
 	}
 
@@ -227,6 +234,19 @@ func isConsumptionNoRent(payload dialog.Payload) bool {
 	unit, _ := payload["unit"].(string)
 
 	return place == "no_rent" || unit == "none"
+}
+
+func isConsumptionStudioClient(payload dialog.Payload) bool {
+	if payload == nil {
+		return false
+	}
+
+	if v, ok := payload["studio_client"].(bool); ok && v {
+		return true
+	}
+
+	mode, _ := payload["rent_mode"].(string)
+	return mode == "studio_client"
 }
 
 func materialUnitLabel(unit string) string {

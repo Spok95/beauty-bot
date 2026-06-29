@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -898,6 +899,34 @@ func (b *Bot) handleStateMessage(ctx context.Context, msg *tgbotapi.Message) {
 		b.showConsumptionRentModeStep(chatID, nil)
 		return
 
+	case dialog.StateConsStudioAmount:
+		s := strings.TrimSpace(msg.Text)
+		s = strings.ReplaceAll(s, ",", ".")
+
+		amount, err := strconv.ParseFloat(s, 64)
+		if err != nil || amount <= 0 || math.IsNaN(amount) || math.IsInf(amount, 0) {
+			b.send(tgbotapi.NewMessage(chatID, "Введите положительное число. Например: 1500"))
+			return
+		}
+
+		if st.Payload == nil {
+			st.Payload = dialog.Payload{}
+		}
+
+		st.Payload["studio_client"] = true
+		st.Payload["rent_mode"] = "studio_client"
+		st.Payload["studio_fee"] = amount
+		st.Payload["no_rent"] = false
+		st.Payload["place"] = "no_rent"
+		st.Payload["unit"] = "none"
+		st.Payload["qty"] = float64(0)
+		st.Payload["with_sub"] = false
+		st.Payload["items"] = []map[string]any{}
+
+		_ = b.states.Set(ctx, chatID, dialog.StateConsCart, st.Payload)
+		b.showConsCart(ctx, chatID, nil, "no_rent", "none", 0, []map[string]any{})
+		return
+
 	case dialog.StateConsFinalComment:
 		comment := strings.TrimSpace(msg.Text)
 
@@ -1578,11 +1607,20 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 			_ = b.states.Set(ctx, fromChat, dialog.StateSupUnitPrice, payload)
 			b.editTextWithNav(fromChat, cb.Message.MessageID, "Введите цену за единицу (руб)")
 			return
+		case dialog.StateConsStudioAmount:
+			_ = b.states.Set(ctx, fromChat, dialog.StateConsPlace, st.Payload)
+			b.showConsumptionRentModeStep(fromChat, &cb.Message.MessageID)
 		case dialog.StateConsQty:
 			// назад к выбору помещения
 			_ = b.states.Set(ctx, fromChat, dialog.StateConsPlace, st.Payload)
 			b.showConsumptionPlaceStep(fromChat, &cb.Message.MessageID)
 		case dialog.StateConsCart:
+			if isConsumptionStudioClient(st.Payload) {
+				_ = b.states.Set(ctx, fromChat, dialog.StateConsStudioAmount, st.Payload)
+				b.showConsumptionStudioAmountStep(fromChat, &cb.Message.MessageID)
+				return
+			}
+
 			if isConsumptionNoRent(st.Payload) {
 				// назад к выбору режима расхода
 				_ = b.states.Set(ctx, fromChat, dialog.StateConsPlace, st.Payload)
@@ -3223,6 +3261,9 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 		}
 
 		delete(payload, "no_rent")
+		delete(payload, "studio_client")
+		delete(payload, "rent_mode")
+		delete(payload, "studio_fee")
 		delete(payload, "place")
 		delete(payload, "unit")
 		delete(payload, "qty")
@@ -3234,12 +3275,43 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 		_ = b.answerCallback(cb, "Ок", false)
 		return
 
+	case data == "cons:rent:studio":
+		st, _ := b.states.Get(ctx, fromChat)
+		payload := dialog.Payload{}
+		if st != nil && st.Payload != nil {
+			payload = st.Payload
+		}
+
+		delete(payload, "no_rent")
+		delete(payload, "place")
+		delete(payload, "unit")
+		delete(payload, "qty")
+		delete(payload, "with_sub")
+		delete(payload, "items")
+		delete(payload, "mats_sum")
+		delete(payload, "mats_rounded")
+		delete(payload, "rent")
+		delete(payload, "total")
+		delete(payload, "rent_parts")
+
+		payload["studio_client"] = true
+		payload["rent_mode"] = "studio_client"
+
+		_ = b.states.Set(ctx, fromChat, dialog.StateConsStudioAmount, payload)
+		b.showConsumptionStudioAmountStep(fromChat, &cb.Message.MessageID)
+		_ = b.answerCallback(cb, "Ок", false)
+		return
+
 	case data == "cons:rent:none":
 		st, _ := b.states.Get(ctx, fromChat)
 		payload := dialog.Payload{}
 		if st != nil && st.Payload != nil {
 			payload = st.Payload
 		}
+
+		delete(payload, "studio_client")
+		delete(payload, "rent_mode")
+		delete(payload, "studio_fee")
 
 		payload["no_rent"] = true
 		payload["place"] = "no_rent"
@@ -3705,6 +3777,12 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 			sessionPayload["no_rent"] = true
 		}
 
+		if isConsumptionStudioClient(st.Payload) {
+			sessionPayload["studio_client"] = true
+			sessionPayload["rent_mode"] = "studio_client"
+			sessionPayload["studio_fee"] = rent
+		}
+
 		if warehouseID := payloadInt64(st.Payload["warehouse_id"]); warehouseID > 0 {
 			sessionPayload["warehouse_id"] = warehouseID
 		}
@@ -3860,7 +3938,9 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 		if b.payments != nil {
 			// здесь НЕ используем placeRU/unitRU, только тех.описание
 			desc := fmt.Sprintf("Расход/аренда: place=%s, qty=%d %s", place, qty, unit)
-			if noRent {
+			if isConsumptionStudioClient(st.Payload) {
+				desc = "Расход/аренда: студийный клиент"
+			} else if noRent {
 				desc = "Расход материалов без аренды"
 			}
 
@@ -3899,7 +3979,9 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 			} else {
 				_, _ = fmt.Fprintf(&sb, "Мастер: @%s (id %d)\n", cb.From.UserName, cb.From.ID)
 			}
-			if noRent {
+			if isConsumptionStudioClient(st.Payload) {
+				_, _ = fmt.Fprintf(&sb, "Тип: студийный клиент\n")
+			} else if noRent {
 				_, _ = fmt.Fprintf(&sb, "Тип: без аренды\n")
 			} else {
 				_, _ = fmt.Fprintf(&sb, "Помещение: %s\nКол-во: %d %s\n", placeRU[place], qty, unitRU[unit])
@@ -3932,7 +4014,10 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 			}
 
 			// финансы: округлённая сумма материалов, аренда, итого — у нас уже посчитаны
-			if noRent {
+			if isConsumptionStudioClient(st.Payload) {
+				_, _ = fmt.Fprintf(&sb, "\nМатериалы: %.2f ₽\nАренда: студийный клиент %.2f ₽\nИтого: %.2f ₽",
+					mats, rent, total)
+			} else if noRent {
 				_, _ = fmt.Fprintf(&sb, "\nМатериалы: %.2f ₽\nАренда: без аренды\nИтого: %.2f ₽",
 					mats, total)
 			} else {
@@ -5275,7 +5360,9 @@ func (b *Bot) buildCancelLastConsumptionText(ctx context.Context, session *consu
 	_, _ = fmt.Fprintf(&sb, "Последний расход/аренда #%d\n", session.ID)
 	_, _ = fmt.Fprintf(&sb, "Дата: %s\n", session.CreatedAt.Format("02.01.2006 15:04"))
 
-	if session.Place == "no_rent" {
+	if isConsumptionStudioClient(session.Payload) {
+		_, _ = fmt.Fprintf(&sb, "Тип: студийный клиент\n")
+	} else if session.Place == "no_rent" {
 		_, _ = fmt.Fprintf(&sb, "Тип: без аренды\n")
 	} else {
 		_, _ = fmt.Fprintf(&sb, "Помещение: %s\n", placeRU[session.Place])
@@ -5315,7 +5402,13 @@ func (b *Bot) buildCancelLastConsumptionText(ctx context.Context, session *consu
 		}
 	}
 
-	if session.Place == "no_rent" {
+	if isConsumptionStudioClient(session.Payload) {
+		_, _ = fmt.Fprintf(&sb, "\nМатериалы: %.2f ₽\nАренда: студийный клиент %.2f ₽\nИтого: %.2f ₽\n",
+			session.MaterialsSum,
+			session.Rent,
+			session.Total,
+		)
+	} else if session.Place == "no_rent" {
 		_, _ = fmt.Fprintf(&sb, "\nМатериалы: %.2f ₽\nАренда: без аренды\nИтого: %.2f ₽\n",
 			session.MaterialsSum,
 			session.Total,
