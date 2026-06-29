@@ -156,6 +156,16 @@ func (b *Bot) handleStateMessage(ctx context.Context, msg *tgbotapi.Message) {
 		return
 	}
 
+	if msg.Text == "Отменить последний расход" {
+		u, _ := b.users.GetByTelegramID(ctx, tgID)
+		if u == nil || u.Status != users.StatusApproved || u.Role != users.RoleMaster {
+			return
+		}
+
+		b.showCancelLastConsumption(ctx, chatID, 0, tgID)
+		return
+	}
+
 	if msg.Text == "Просмотр остатков" {
 		u, _ := b.users.GetByTelegramID(ctx, tgID)
 		if u == nil || u.Status != users.StatusApproved || u.Role != users.RoleMaster {
@@ -3619,6 +3629,22 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 		_ = b.answerCallback(cb, "Ок", false)
 		return
 
+	case data == "cons:cancel_last":
+		b.showCancelLastConsumption(ctx, fromChat, cb.Message.MessageID, cb.From.ID)
+		_ = b.answerCallback(cb, "Ок", false)
+		return
+
+	case strings.HasPrefix(data, "cons:cancel_last:confirm:"):
+		sessionID, err := strconv.ParseInt(strings.TrimPrefix(data, "cons:cancel_last:confirm:"), 10, 64)
+		if err != nil || sessionID <= 0 {
+			_ = b.answerCallback(cb, "Некорректная сессия", true)
+			return
+		}
+
+		b.cancelLastConsumption(ctx, fromChat, cb.Message.MessageID, cb.From.ID, sessionID)
+		_ = b.answerCallback(cb, "Ок", false)
+		return
+
 	case data == "cons:confirm":
 		st, _ := b.states.Get(ctx, fromChat)
 		if st == nil || st.Payload == nil {
@@ -3693,6 +3719,10 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 
 		if finalComment != "" {
 			sessionPayload["final_comment"] = finalComment
+		}
+
+		if rentParts, ok := st.Payload["rent_parts"]; ok && rentParts != nil {
+			sessionPayload["rent_parts"] = rentParts
 		}
 
 		sid, err := b.cons.CreateSession(ctx, u.ID, place, unit, qty, withSub, mats, rounded, rent, total, sessionPayload)
@@ -5091,4 +5121,280 @@ func formatQty(v any) string {
 	default:
 		return fmt.Sprintf("%v", x)
 	}
+}
+
+func (b *Bot) showCancelLastConsumption(ctx context.Context, chatID int64, editMsgID int, telegramID int64) {
+	u, _ := b.users.GetByTelegramID(ctx, telegramID)
+	if u == nil || u.Status != users.StatusApproved || u.Role != users.RoleMaster {
+		if editMsgID != 0 {
+			b.editTextAndClear(chatID, editMsgID, "Нет доступа")
+		} else {
+			b.send(tgbotapi.NewMessage(chatID, "Нет доступа"))
+		}
+		return
+	}
+
+	session, err := b.cons.LastCancelableSessionByUser(ctx, u.ID)
+	if err != nil {
+		b.log.Error("failed to load last consumption session", "err", err, "user_id", u.ID)
+		if editMsgID != 0 {
+			b.editTextAndClear(chatID, editMsgID, "Не удалось загрузить последний расход.")
+		} else {
+			b.send(tgbotapi.NewMessage(chatID, "Не удалось загрузить последний расход."))
+		}
+		return
+	}
+
+	if session == nil {
+		if editMsgID != 0 {
+			b.editTextAndClear(chatID, editMsgID, "У вас нет расхода/аренды для отмены.")
+		} else {
+			b.send(tgbotapi.NewMessage(chatID, "У вас нет расхода/аренды для отмены."))
+		}
+		return
+	}
+
+	items, err := b.cons.ListItemsBySession(ctx, session.ID)
+	if err != nil {
+		b.log.Error("failed to load consumption session items", "err", err, "session_id", session.ID)
+		if editMsgID != 0 {
+			b.editTextAndClear(chatID, editMsgID, "Не удалось загрузить позиции расхода.")
+		} else {
+			b.send(tgbotapi.NewMessage(chatID, "Не удалось загрузить позиции расхода."))
+		}
+		return
+	}
+
+	text := b.buildCancelLastConsumptionText(ctx, session, items)
+
+	kb := tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("✅ Отменить последний расход", fmt.Sprintf("cons:cancel_last:confirm:%d", session.ID)),
+		),
+		navKeyboard(false, true).InlineKeyboard[0],
+	)
+
+	if editMsgID != 0 {
+		b.send(tgbotapi.NewEditMessageTextAndMarkup(chatID, editMsgID, text, kb))
+		return
+	}
+
+	msg := tgbotapi.NewMessage(chatID, text)
+	msg.ReplyMarkup = kb
+	b.send(msg)
+}
+
+func (b *Bot) cancelLastConsumption(ctx context.Context, chatID int64, editMsgID int, telegramID int64, sessionID int64) {
+	u, _ := b.users.GetByTelegramID(ctx, telegramID)
+	if u == nil || u.Status != users.StatusApproved || u.Role != users.RoleMaster {
+		b.editTextAndClear(chatID, editMsgID, "Нет доступа")
+		return
+	}
+
+	session, err := b.cons.LastCancelableSessionByUser(ctx, u.ID)
+	if err != nil {
+		b.log.Error("failed to load last consumption session before cancel", "err", err, "user_id", u.ID)
+		b.editTextAndClear(chatID, editMsgID, "Не удалось загрузить последний расход.")
+		return
+	}
+
+	if session == nil {
+		b.editTextAndClear(chatID, editMsgID, "У вас нет расхода/аренды для отмены.")
+		return
+	}
+
+	if session.ID != sessionID {
+		b.editTextAndClear(chatID, editMsgID, "Этот расход уже не последний. Откройте отмену заново.")
+		return
+	}
+
+	items, err := b.cons.ListItemsBySession(ctx, session.ID)
+	if err != nil {
+		b.log.Error("failed to load consumption session items before cancel", "err", err, "session_id", session.ID)
+		b.editTextAndClear(chatID, editMsgID, "Не удалось загрузить позиции расхода.")
+		return
+	}
+
+	warehouseID := payloadInt64(session.Payload["warehouse_id"])
+	if len(items) > 0 && warehouseID <= 0 {
+		b.editTextAndClear(chatID, editMsgID, "Нельзя отменить расход: в старой записи не найден склад списания.")
+		return
+	}
+
+	// 1. Возвращаем материалы на склад обратными движениями.
+	for _, it := range items {
+		if err := b.inventory.Receive(ctx, u.ID, warehouseID, it.MaterialID, it.Qty, fmt.Sprintf("cancel consumption session #%d", session.ID)); err != nil {
+			b.log.Error("failed to restore material on consumption cancel",
+				"err", err,
+				"session_id", session.ID,
+				"warehouse_id", warehouseID,
+				"material_id", it.MaterialID,
+			)
+			b.editTextAndClear(chatID, editMsgID, "Не удалось вернуть материалы на склад. Отмена не выполнена.")
+			return
+		}
+	}
+
+	// 2. Возвращаем часы/дни абонемента и сумму материалов по абонементу, если она списывалась.
+	if session.WithSubscription && b.subs != nil {
+		if err := b.revertSubscriptionUsageForCanceledSession(ctx, session); err != nil {
+			b.log.Error("failed to restore subscription on consumption cancel",
+				"err", err,
+				"session_id", session.ID,
+				"user_id", u.ID,
+			)
+			b.editTextAndClear(chatID, editMsgID, "Не удалось вернуть абонемент. Отмена не выполнена.")
+			return
+		}
+	}
+
+	// 3. Отменяем счёт и помечаем сессию отменённой.
+	if err := b.cons.CancelInvoicesBySession(ctx, session.ID); err != nil {
+		b.log.Error("failed to cancel invoice for consumption session", "err", err, "session_id", session.ID)
+		b.editTextAndClear(chatID, editMsgID, "Не удалось отменить счёт. Отмена не выполнена.")
+		return
+	}
+
+	if err := b.cons.CancelSession(ctx, session.ID); err != nil {
+		b.log.Error("failed to cancel consumption session", "err", err, "session_id", session.ID)
+		b.editTextAndClear(chatID, editMsgID, "Не удалось отменить сессию.")
+		return
+	}
+
+	b.editTextAndClear(chatID, editMsgID, fmt.Sprintf(
+		"Последний расход/аренда #%d отменён.\n\nМатериалы возвращены на склад, счёт отменён. Если был списан абонемент, часы/дни возвращены.",
+		session.ID,
+	))
+}
+
+func (b *Bot) buildCancelLastConsumptionText(ctx context.Context, session *consumption.Session, items []consumption.Item) string {
+	placeRU := map[string]string{"hall": "Зал", "cabinet": "Кабинет", "no_rent": "Без аренды"}
+	unitRU := map[string]string{"hour": "ч", "day": "дн", "none": ""}
+
+	var sb strings.Builder
+	_, _ = fmt.Fprintf(&sb, "Последний расход/аренда #%d\n", session.ID)
+	_, _ = fmt.Fprintf(&sb, "Дата: %s\n", session.CreatedAt.Format("02.01.2006 15:04"))
+
+	if session.Place == "no_rent" {
+		_, _ = fmt.Fprintf(&sb, "Тип: без аренды\n")
+	} else {
+		_, _ = fmt.Fprintf(&sb, "Помещение: %s\n", placeRU[session.Place])
+		_, _ = fmt.Fprintf(&sb, "Кол-во: %d %s\n", session.Qty, unitRU[session.Unit])
+	}
+
+	if warehouseName, ok := session.Payload["warehouse_name"].(string); ok && strings.TrimSpace(warehouseName) != "" {
+		_, _ = fmt.Fprintf(&sb, "Склад: %s\n", warehouseName)
+	}
+
+	if comment, ok := session.Payload["comment"].(string); ok && strings.TrimSpace(comment) != "" {
+		_, _ = fmt.Fprintf(&sb, "Комментарий: %s\n", strings.TrimSpace(comment))
+	}
+
+	if finalComment, ok := session.Payload["final_comment"].(string); ok && strings.TrimSpace(finalComment) != "" {
+		_, _ = fmt.Fprintf(&sb, "Комментарий мастера: %s\n", strings.TrimSpace(finalComment))
+	}
+
+	sb.WriteString("\nМатериалы:\n")
+	if len(items) == 0 {
+		sb.WriteString("• Материалы не внесены\n")
+	} else {
+		for _, it := range items {
+			name := fmt.Sprintf("ID:%d", it.MaterialID)
+			unit := ""
+			if m, _ := b.materials.GetByID(ctx, it.MaterialID); m != nil {
+				name = materialDisplayName(m.Brand, m.Name)
+				unit = materialUnitLabel(string(m.Unit))
+			}
+			_, _ = fmt.Fprintf(&sb, "• %s — %s %s × %.2f ₽ = %.2f ₽\n",
+				name,
+				formatQty(it.Qty),
+				unit,
+				it.UnitPrice,
+				it.Cost,
+			)
+		}
+	}
+
+	if session.Place == "no_rent" {
+		_, _ = fmt.Fprintf(&sb, "\nМатериалы: %.2f ₽\nАренда: без аренды\nИтого: %.2f ₽\n",
+			session.MaterialsSum,
+			session.Total,
+		)
+	} else {
+		_, _ = fmt.Fprintf(&sb, "\nМатериалы: %.2f ₽\nАренда: %.2f ₽\nИтого: %.2f ₽\n",
+			session.MaterialsSum,
+			session.Rent,
+			session.Total,
+		)
+	}
+
+	sb.WriteString("\nОтменить эту запись? После отмены нужно создать новую запись заново.")
+
+	return sb.String()
+}
+
+func (b *Bot) revertSubscriptionUsageForCanceledSession(ctx context.Context, session *consumption.Session) error {
+	parts := parseRentParts(session.Payload["rent_parts"])
+	if len(parts) > 0 {
+		totalSubQty := 0
+		for _, part := range parts {
+			if !payloadBool(part, "with_sub") {
+				continue
+			}
+			qty := payloadInt(part, "qty")
+			if qty > 0 {
+				totalSubQty += qty
+			}
+		}
+
+		for _, part := range parts {
+			if !payloadBool(part, "with_sub") {
+				continue
+			}
+
+			subID := payloadInt64(part["sub_id"])
+			partQty := payloadInt(part, "qty")
+			if subID <= 0 || partQty <= 0 {
+				continue
+			}
+
+			if err := b.subs.AddUsageDelta(ctx, subID, -partQty); err != nil {
+				return err
+			}
+
+			if totalSubQty > 0 && session.MaterialsSum > 0 {
+				matsForSub := session.MaterialsSum * float64(partQty) / float64(totalSubQty)
+				if err := b.subs.AddMaterialsUsageDelta(ctx, subID, -matsForSub); err != nil {
+					return err
+				}
+			}
+		}
+
+		return nil
+	}
+
+	// Старые сессии до сохранения rent_parts: возвращаем расход в последний абонемент по месту/единице.
+	if session.Qty <= 0 || session.UserID <= 0 || session.Place == "no_rent" || session.Unit == "none" {
+		return nil
+	}
+
+	sub, err := b.subs.LastByUserPlaceUnit(ctx, session.UserID, session.Place, session.Unit)
+	if err != nil {
+		return err
+	}
+	if sub == nil {
+		return fmt.Errorf("subscription for canceled session not found")
+	}
+
+	if err := b.subs.AddUsageDelta(ctx, sub.ID, -session.Qty); err != nil {
+		return err
+	}
+
+	if session.MaterialsSum > 0 {
+		if err := b.subs.AddMaterialsUsageDelta(ctx, sub.ID, -session.MaterialsSum); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }

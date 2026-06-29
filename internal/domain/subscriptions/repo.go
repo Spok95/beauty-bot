@@ -200,6 +200,37 @@ WHERE id = $1
 	return nil
 }
 
+func (r *Repo) AddUsageDelta(ctx context.Context, id int64, delta int) error {
+	const q = `
+UPDATE subscriptions
+SET used_qty = used_qty + $2,
+    updated_at = NOW()
+WHERE id = $1
+  AND used_qty + $2 >= 0
+  AND used_qty + $2 <= total_qty
+`
+	tag, err := r.db.Exec(ctx, q, id, delta)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrInsufficientLimit
+	}
+	return nil
+}
+
+func (r *Repo) AddMaterialsUsageDelta(ctx context.Context, id int64, delta float64) error {
+	const q = `
+UPDATE subscriptions
+SET materials_sum_total = GREATEST(0, COALESCE(materials_sum_total, 0) + $2),
+    threshold_met = GREATEST(0, COALESCE(materials_sum_total, 0) + $2) >= threshold_materials_total,
+    updated_at = NOW()
+WHERE id = $1;
+`
+	_, err := r.db.Exec(ctx, q, id, delta)
+	return err
+}
+
 // AddMaterialsUsage накапливает сумму материалов по абонементу
 // и обновляет флаг threshold_met.
 func (r *Repo) AddMaterialsUsage(ctx context.Context, id int64, delta float64) error {

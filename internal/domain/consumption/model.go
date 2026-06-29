@@ -14,6 +14,7 @@ type Session struct {
 	Rent                float64
 	Total               float64
 	Status              string
+	Payload             map[string]any
 	CreatedAt           time.Time
 }
 

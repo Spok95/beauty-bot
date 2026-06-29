@@ -39,6 +39,120 @@ func (r *Repo) AddItem(ctx context.Context, sessionID, materialID int64, qty, un
 	return err
 }
 
+func (r *Repo) LastCancelableSessionByUser(ctx context.Context, userID int64) (*Session, error) {
+	row := r.pool.QueryRow(ctx, `
+		SELECT
+			id,
+			user_id,
+			place,
+			unit,
+			qty,
+			with_subscription,
+			materials_sum,
+			rounded_materials_sum,
+			rent,
+			total,
+			status,
+			payload,
+			created_at
+		FROM consumption_sessions
+		WHERE user_id = $1
+		  AND status <> 'canceled'
+		ORDER BY created_at DESC, id DESC
+		LIMIT 1
+	`, userID)
+
+	var s Session
+	var payloadBytes []byte
+	if err := row.Scan(
+		&s.ID,
+		&s.UserID,
+		&s.Place,
+		&s.Unit,
+		&s.Qty,
+		&s.WithSubscription,
+		&s.MaterialsSum,
+		&s.RoundedMaterialsSum,
+		&s.Rent,
+		&s.Total,
+		&s.Status,
+		&payloadBytes,
+		&s.CreatedAt,
+	); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	if len(payloadBytes) > 0 {
+		_ = json.Unmarshal(payloadBytes, &s.Payload)
+	}
+	if s.Payload == nil {
+		s.Payload = map[string]any{}
+	}
+
+	return &s, nil
+}
+
+func (r *Repo) ListItemsBySession(ctx context.Context, sessionID int64) ([]Item, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT id, session_id, material_id, qty, unit_price, cost
+		FROM consumption_items
+		WHERE session_id = $1
+		ORDER BY id
+	`, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []Item
+	for rows.Next() {
+		var it Item
+		if err := rows.Scan(
+			&it.ID,
+			&it.SessionID,
+			&it.MaterialID,
+			&it.Qty,
+			&it.UnitPrice,
+			&it.Cost,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, it)
+	}
+
+	return out, rows.Err()
+}
+
+func (r *Repo) CancelSession(ctx context.Context, sessionID int64) error {
+	tag, err := r.pool.Exec(ctx, `
+		UPDATE consumption_sessions
+		SET status = 'canceled',
+		    payload = jsonb_set(payload, '{cancelled_at}', to_jsonb(now()::text), true)
+		WHERE id = $1
+		  AND status <> 'canceled'
+	`, sessionID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return pgx.ErrNoRows
+	}
+	return nil
+}
+
+func (r *Repo) CancelInvoicesBySession(ctx context.Context, sessionID int64) error {
+	_, err := r.pool.Exec(ctx, `
+		UPDATE invoices
+		SET status = 'canceled'
+		WHERE session_id = $1
+		  AND status <> 'canceled'
+	`, sessionID)
+	return err
+}
+
 func (r *Repo) CreateInvoice(ctx context.Context, userID, sessionID int64, amount float64, comment string) (int64, error) {
 	row := r.pool.QueryRow(ctx, `
 		INSERT INTO invoices (user_id, session_id, amount, status, comment)
@@ -451,8 +565,7 @@ JOIN material_brands   AS b   ON b.id = m.brand_id
 WHERE
     s.created_at >= $1
     AND s.created_at <  $2
-    -- если хочешь всё же фильтровать, можно так:
-    -- AND s.status <> 'canceled'
+    AND s.status <> 'canceled'
 ORDER BY
     s.user_id,
     s.created_at,
