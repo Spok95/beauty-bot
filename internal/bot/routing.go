@@ -3631,7 +3631,14 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 			return
 		}
 
-		_ = b.states.Set(ctx, fromChat, dialog.StateConsFinalComment, st.Payload)
+		calculatedPayload, userError, err := b.calculateConsumptionReceiptPayload(ctx, cb.From.ID, st.Payload)
+		if err != nil {
+			b.editTextAndClear(fromChat, cb.Message.MessageID, userError)
+			_ = b.answerCallback(cb, "Ошибка", true)
+			return
+		}
+
+		_ = b.states.Set(ctx, fromChat, dialog.StateConsFinalComment, calculatedPayload)
 
 		kb := tgbotapi.NewInlineKeyboardMarkup(
 			tgbotapi.NewInlineKeyboardRow(
@@ -3640,10 +3647,13 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 			navKeyboard(true, true).InlineKeyboard[0],
 		)
 
+		text := "Введите комментарий мастера к чеку или нажмите «Пропустить».\n\n" +
+			b.buildConsumptionReceipt(ctx, calculatedPayload, "Текущий расчет:")
+
 		msg := tgbotapi.NewEditMessageTextAndMarkup(
 			fromChat,
 			cb.Message.MessageID,
-			"Введите комментарий мастера к чеку или нажмите «Пропустить».",
+			text,
 			kb,
 		)
 		b.send(msg)
@@ -3926,38 +3936,11 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 			invoiceComment += finalComment
 		}
 
-		invoiceID, err := b.cons.CreateInvoice(ctx, u.ID, sid, total, invoiceComment)
+		_, err = b.cons.CreateInvoice(ctx, u.ID, sid, total, invoiceComment)
 		if err != nil {
 			b.editTextAndClear(fromChat, cb.Message.MessageID, "Не удалось создать счёт.")
 			_ = b.answerCallback(cb, "Ошибка", true)
 			return
-		}
-
-		// пробуем сформировать ссылку на оплату (эмулятор платежей)
-		var payURL string
-		if b.payments != nil {
-			// здесь НЕ используем placeRU/unitRU, только тех.описание
-			desc := fmt.Sprintf("Расход/аренда: place=%s, qty=%d %s", place, qty, unit)
-			if isConsumptionStudioClient(st.Payload) {
-				desc = "Расход/аренда: студийный клиент"
-			} else if noRent {
-				desc = "Расход материалов без аренды"
-			}
-
-			if url, err := b.payments.CreatePayment(ctx, invoiceID, total, desc); err != nil {
-				b.log.Error("failed to create payment link",
-					"invoice_id", invoiceID,
-					"err", err,
-				)
-			} else {
-				payURL = url
-				if err := b.cons.SetInvoicePaymentLink(ctx, invoiceID, payURL); err != nil {
-					b.log.Error("failed to store payment link",
-						"invoice_id", invoiceID,
-						"err", err,
-					)
-				}
-			}
 		}
 
 		b.notifyLowOrNegativeBatch(ctx, pairs)
@@ -4045,23 +4028,6 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 		receiptText := b.buildConsumptionReceipt(ctx, st.Payload, "✅ Сессия подтверждена.\n\nЧек:")
 
 		b.editTextAndClear(fromChat, cb.Message.MessageID, receiptText)
-
-		// если сформировалась ссылка на оплату – даём кнопку мастеру
-		if payURL != "" {
-			kb := tgbotapi.NewInlineKeyboardMarkup(
-				tgbotapi.NewInlineKeyboardRow(
-					tgbotapi.NewInlineKeyboardButtonURL(
-						fmt.Sprintf("Оплатить %.2f ₽", total),
-						payURL,
-					),
-				),
-				navKeyboard(true, true).InlineKeyboard[0],
-			)
-
-			msg := tgbotapi.NewMessage(fromChat, "Перейти к оплате:")
-			msg.ReplyMarkup = kb
-			b.send(msg)
-		}
 
 		_ = b.states.Set(ctx, fromChat, dialog.StateIdle, dialog.Payload{})
 		_ = b.answerCallback(cb, "Готово", false)
@@ -5344,6 +5310,60 @@ func (b *Bot) cancelLastConsumption(ctx context.Context, chatID int64, editMsgID
 		b.log.Error("failed to cancel consumption session", "err", err, "session_id", session.ID)
 		b.editTextAndClear(chatID, editMsgID, "Не удалось отменить сессию.")
 		return
+	}
+
+	// Уведомляем всех approved-пользователей с ролью admin об отмене расхода.
+	// Роль administrator намеренно не включаем — это тот же список получателей,
+	// который используется для уведомлений о подтверждённой сессии.
+	if admins, loadErr := b.users.ListByRole(ctx, users.RoleAdmin, users.StatusApproved); loadErr == nil && len(admins) > 0 {
+		var sb strings.Builder
+		_, _ = fmt.Fprintf(&sb, "↩️ Отменена сессия расхода/аренды #%d\n", session.ID)
+		_, _ = fmt.Fprintf(&sb, "Мастер: %s (id %d)\n", strings.TrimSpace(u.Username), telegramID)
+
+		if isConsumptionStudioClient(session.Payload) {
+			_, _ = fmt.Fprintf(&sb, "Тип: студийный клиент\n")
+		} else if session.Place == "no_rent" {
+			_, _ = fmt.Fprintf(&sb, "Тип: без аренды\n")
+		} else {
+			placeRU := map[string]string{"hall": "Зал", "cabinet": "Кабинет"}
+			unitRU := map[string]string{"hour": "ч", "day": "дн"}
+			_, _ = fmt.Fprintf(&sb, "Помещение: %s\nКол-во: %d %s\n", placeRU[session.Place], session.Qty, unitRU[session.Unit])
+		}
+
+		if finalComment, ok := session.Payload["final_comment"].(string); ok && strings.TrimSpace(finalComment) != "" {
+			_, _ = fmt.Fprintf(&sb, "Комментарий мастера: %s\n", strings.TrimSpace(finalComment))
+		}
+
+		_, _ = fmt.Fprintf(&sb, "\nМатериалы возвращены на склад: %d поз.\n", len(items))
+		if session.WithSubscription {
+			sb.WriteString("Абонемент: списание возвращено.\n")
+		}
+
+		if isConsumptionStudioClient(session.Payload) {
+			_, _ = fmt.Fprintf(&sb, "Материалы: %.2f ₽\nАренда: студийный клиент %.2f ₽\nИтого отменено: %.2f ₽",
+				session.MaterialsSum, session.Rent, session.Total)
+		} else if session.Place == "no_rent" {
+			_, _ = fmt.Fprintf(&sb, "Материалы: %.2f ₽\nАренда: без аренды\nИтого отменено: %.2f ₽",
+				session.MaterialsSum, session.Total)
+		} else {
+			_, _ = fmt.Fprintf(&sb, "Материалы: %.2f ₽\nАренда: %.2f ₽\nИтого отменено: %.2f ₽",
+				session.MaterialsSum, session.Rent, session.Total)
+		}
+
+		notificationText := sb.String()
+		seen := map[int64]struct{}{}
+		for _, admin := range admins {
+			if admin == nil || admin.TelegramID == 0 {
+				continue
+			}
+			if _, ok := seen[admin.TelegramID]; ok {
+				continue
+			}
+			seen[admin.TelegramID] = struct{}{}
+			b.send(tgbotapi.NewMessage(admin.TelegramID, notificationText))
+		}
+	} else if loadErr != nil {
+		b.log.Error("failed to load admins for consumption cancellation notification", "err", loadErr)
 	}
 
 	b.editTextAndClear(chatID, editMsgID, fmt.Sprintf(
