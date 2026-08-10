@@ -1721,6 +1721,12 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 
 			_ = b.states.Set(ctx, fromChat, dialog.StateConsMatSearch, st.Payload)
 			b.showConsMaterialSearchMenu(fromChat, cb.Message.MessageID)
+		case dialog.StateConsFinalComment:
+			// назад из шага комментария — в корзину текущего расхода
+			items := b.consParseItems(st.Payload["items"])
+			_ = b.states.Set(ctx, fromChat, dialog.StateConsCart, st.Payload)
+			b.showConsCart(ctx, fromChat, &cb.Message.MessageID, st.Payload["place"].(string), st.Payload["unit"].(string), int(st.Payload["qty"].(float64)), items)
+
 		case dialog.StateConsSummary:
 			// назад в корзину
 			items := b.consParseItems(st.Payload["items"])
