@@ -3,7 +3,6 @@ package bot
 import (
 	"context"
 	"encoding/base64"
-	"errors"
 	"fmt"
 	"math"
 	"strconv"
@@ -14,7 +13,6 @@ import (
 	"github.com/Spok95/beauty-bot/internal/domain/catalog"
 	"github.com/Spok95/beauty-bot/internal/domain/consumption"
 	"github.com/Spok95/beauty-bot/internal/domain/materials"
-	subsdomain "github.com/Spok95/beauty-bot/internal/domain/subscriptions"
 	"github.com/Spok95/beauty-bot/internal/domain/users"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
@@ -942,7 +940,7 @@ func (b *Bot) handleStateMessage(ctx context.Context, msg *tgbotapi.Message) {
 
 		st.Payload["final_comment"] = comment
 
-		b.showConsumptionReceiptForConfirm(ctx, chatID, 0, msg.From.ID, st.Payload)
+		b.finalizeConsumption(ctx, chatID, 0, msg.From.ID, msg.From.UserName, st.Payload)
 
 		return
 
@@ -3678,9 +3676,9 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 
 		st.Payload["final_comment"] = ""
 
-		b.showConsumptionReceiptForConfirm(ctx, fromChat, cb.Message.MessageID, cb.From.ID, st.Payload)
+		b.finalizeConsumption(ctx, fromChat, cb.Message.MessageID, cb.From.ID, cb.From.UserName, st.Payload)
 
-		_ = b.answerCallback(cb, "Ок", false)
+		_ = b.answerCallback(cb, "Готово", false)
 		return
 
 	case data == "cons:edit":
@@ -3736,306 +3734,13 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 	case data == "cons:confirm":
 		st, _ := b.states.Get(ctx, fromChat)
 		if st == nil || st.Payload == nil {
-			// вся сессия потерялась / устарела — аккуратно выходим
 			b.editTextAndClear(fromChat, cb.Message.MessageID,
 				"Сессия устарела. Начните заново через кнопку «Расход/Аренда».")
 			_ = b.answerCallback(cb, "Ошибка", true)
 			return
 		}
 
-		u, _ := b.users.GetByTelegramID(ctx, cb.From.ID)
-		if u == nil || u.Status != "approved" {
-			b.editTextAndClear(fromChat, cb.Message.MessageID, "Нет доступа")
-			_ = b.answerCallback(cb, "Ошибка", true)
-			return
-		}
-
-		place := st.Payload["place"].(string)
-		unit := st.Payload["unit"].(string)
-		qty := int(st.Payload["qty"].(float64))
-		items := b.consParseItems(st.Payload["items"])
-		mats := st.Payload["mats_sum"].(float64)
-		rounded := st.Payload["mats_rounded"].(float64)
-		rent := st.Payload["rent"].(float64)
-		total := st.Payload["total"].(float64)
-		noRent := isConsumptionNoRent(st.Payload)
-
-		var comment string
-		if v, ok := st.Payload["comment"].(string); ok {
-			comment = v
-		}
-
-		var finalComment string
-		if v, ok := st.Payload["final_comment"].(string); ok {
-			finalComment = v
-		}
-
-		// Склад обязателен только если есть материалы для списания.
-		// Для сценария «аренда без материалов» склад не выбирается и не нужен.
-		whID := payloadInt64(st.Payload["warehouse_id"])
-		if len(items) > 0 && whID <= 0 {
-			b.editTextAndClear(fromChat, cb.Message.MessageID, "Склад не выбран. Начните расчёт заново.")
-			_ = b.answerCallback(cb, "Ошибка", true)
-			return
-		}
-
-		withSub := false
-		if v, ok := st.Payload["with_sub"].(bool); ok {
-			withSub = v
-		}
-
-		// создаём сессию + позиции
-		sessionPayload := map[string]any{
-			"items_count": len(items),
-		}
-
-		if noRent {
-			sessionPayload["no_rent"] = true
-		}
-
-		if isConsumptionStudioClient(st.Payload) {
-			sessionPayload["studio_client"] = true
-			sessionPayload["rent_mode"] = "studio_client"
-			sessionPayload["studio_fee"] = rent
-		}
-
-		if warehouseID := payloadInt64(st.Payload["warehouse_id"]); warehouseID > 0 {
-			sessionPayload["warehouse_id"] = warehouseID
-		}
-
-		if warehouseName, ok := st.Payload["warehouse_name"].(string); ok && strings.TrimSpace(warehouseName) != "" {
-			sessionPayload["warehouse_name"] = warehouseName
-		}
-
-		if comment != "" {
-			sessionPayload["comment"] = comment
-		}
-
-		if finalComment != "" {
-			sessionPayload["final_comment"] = finalComment
-		}
-
-		if rentParts, ok := st.Payload["rent_parts"]; ok && rentParts != nil {
-			sessionPayload["rent_parts"] = rentParts
-		}
-
-		sid, err := b.cons.CreateSession(ctx, u.ID, place, unit, qty, withSub, mats, rounded, rent, total, sessionPayload)
-
-		if err != nil {
-			b.editTextAndClear(fromChat, cb.Message.MessageID, "Не удалось создать сессию")
-			_ = b.answerCallback(cb, "Ошибка", true)
-			return
-		}
-		// Учёт абонемента: спишем использованное количество (часы/дни) за текущий месяц
-		if withSub && b.subs != nil {
-			// разбиваем сессию на части по тем же правилам (старые/новые абонементы + без абонемента)
-			metas, _ := b.splitQtyBySubscriptions(ctx, u.ID, place, unit, qty)
-			month := time.Now().Format("2006-01")
-
-			for _, m := range metas {
-				if !m.WithSub || m.SubID == 0 || m.Qty <= 0 {
-					continue
-				}
-
-				if err := b.subs.AddUsage(ctx, m.SubID, m.Qty); err != nil {
-					if errors.Is(err, subsdomain.ErrInsufficientLimit) && b.adminChat != 0 {
-						// сигнал админу, что по конкретному абонементу лимит уже выбит
-						b.send(tgbotapi.NewMessage(b.adminChat,
-							fmt.Sprintf("⚠️ Не удалось списать %d %s абонемента (id=%d) для мастера id %d: недостаточно лимита.",
-								m.Qty,
-								map[string]string{"hour": "часов", "day": "дней"}[unit],
-								m.SubID,
-								u.ID,
-							)))
-					}
-				}
-			}
-
-			// после списаний проверим, есть ли ещё активные абонементы по этому месту/единице
-			if subsAfter, err := b.subs.ListActiveByPlaceUnitMonth(ctx, u.ID, place, unit, month); err == nil && len(subsAfter) == 0 {
-				// всё по этому помещению выработано — предложим купить новый абонемент
-				msg := tgbotapi.NewMessage(fromChat,
-					"Абонемент по этому помещению полностью использован.\nХотите приобрести новый абонемент?")
-				msg.ReplyMarkup = b.subBuyPlaceKeyboard()
-				b.send(msg)
-			}
-		}
-
-		// Добавляем сумму материалов к абонементам
-		if partsRaw, ok := st.Payload["rent_parts"]; ok && partsRaw != nil && b.subs != nil && mats > 0 {
-			if parts, ok := partsRaw.([]any); ok {
-				// Считаем общий объём часов/дней по частям с абонементом
-				totalSubQty := 0
-				for _, pr := range parts {
-					mp, ok := pr.(map[string]any)
-					if !ok {
-						continue
-					}
-					withSub, _ := mp["with_sub"].(bool)
-					if !withSub {
-						continue
-					}
-					qtyF, okQty := mp["qty"].(float64)
-					if !okQty {
-						continue
-					}
-					totalSubQty += int(qtyF)
-				}
-
-				if totalSubQty > 0 {
-					for _, pr := range parts {
-						mp, ok := pr.(map[string]any)
-						if !ok {
-							continue
-						}
-
-						withSub, _ := mp["with_sub"].(bool)
-						if !withSub {
-							continue
-						}
-
-						subIDF, okID := mp["sub_id"].(float64)
-						qtyF, okQty := mp["qty"].(float64)
-						if !okID || !okQty {
-							continue
-						}
-						partQty := int(qtyF)
-						if partQty <= 0 {
-							continue
-						}
-
-						subID := int64(subIDF)
-						// Фактическая сумма материалов, приходящаяся на этот абонемент
-						matsForSub := mats * float64(partQty) / float64(totalSubQty)
-
-						// Ошибку можно залогировать, но не валить весь консумпшен
-						_ = b.subs.AddMaterialsUsage(ctx, subID, matsForSub)
-					}
-				}
-			}
-		}
-
-		pairs := make([][2]int64, 0, len(items))
-		// позиции + списание
-		for _, it := range items {
-			matID := int64(it["mat_id"].(float64))
-			q := int64(it["qty"].(float64))
-			price, _ := b.materials.GetPrice(ctx, matID)
-			cost := float64(q) * price
-
-			// списание (разрешено уходить в минус)
-			if err := b.inventory.Consume(ctx, u.ID, whID, matID, float64(q), "consumption"); err != nil {
-				b.editTextAndClear(fromChat, cb.Message.MessageID, "Ошибка списания")
-				_ = b.answerCallback(cb, "Ошибка", true)
-				return
-			}
-			_ = b.cons.AddItem(ctx, sid, matID, float64(q), price, cost)
-			pairs = append(pairs, [2]int64{whID, matID})
-		}
-
-		// инвойс (pending)
-		invoiceComment := comment
-		if finalComment != "" {
-			if invoiceComment != "" {
-				invoiceComment += "\n"
-			}
-			invoiceComment += finalComment
-		}
-
-		_, err = b.cons.CreateInvoice(ctx, u.ID, sid, total, invoiceComment)
-		if err != nil {
-			b.editTextAndClear(fromChat, cb.Message.MessageID, "Не удалось создать счёт.")
-			_ = b.answerCallback(cb, "Ошибка", true)
-			return
-		}
-
-		b.notifyLowOrNegativeBatch(ctx, pairs)
-		// уведомление admin о подтверждённой сессии расхода/аренды
-		// Важно: это уведомление отправляем только пользователям с ролью admin.
-		// Роль administrator сюда не включаем.
-		if admins, err := b.users.ListByRole(ctx, users.RoleAdmin, users.StatusApproved); err == nil && len(admins) > 0 {
-			// кто подтвердил
-			u, _ := b.users.GetByTelegramID(ctx, cb.From.ID)
-
-			// соберём удобочитаемый текст
-			placeRU := map[string]string{"hall": "Зал", "cabinet": "Кабинет"}
-			unitRU := map[string]string{"hour": "ч", "day": "дн"}
-			var sb strings.Builder
-
-			_, _ = fmt.Fprintf(&sb, "✅ Подтверждена сессия расхода/аренды\n")
-			if u != nil {
-				_, _ = fmt.Fprintf(&sb, "Мастер: %s (@%s, id %d)\n", strings.TrimSpace(u.Username), cb.From.UserName, cb.From.ID)
-			} else {
-				_, _ = fmt.Fprintf(&sb, "Мастер: @%s (id %d)\n", cb.From.UserName, cb.From.ID)
-			}
-			if isConsumptionStudioClient(st.Payload) {
-				_, _ = fmt.Fprintf(&sb, "Тип: студийный клиент\n")
-			} else if noRent {
-				_, _ = fmt.Fprintf(&sb, "Тип: без аренды\n")
-			} else {
-				_, _ = fmt.Fprintf(&sb, "Помещение: %s\nКол-во: %d %s\n", placeRU[place], qty, unitRU[unit])
-			}
-			if comment != "" {
-				_, _ = fmt.Fprintf(&sb, "Комментарий: %s\n", comment)
-			}
-
-			if finalComment != "" {
-				_, _ = fmt.Fprintf(&sb, "Комментарий мастера: %s\n", finalComment)
-			}
-
-			// материалы
-			_, _ = fmt.Fprintf(&sb, "Материалы:\n")
-			if len(items) == 0 {
-				_, _ = fmt.Fprintf(&sb, "• Материалы не внесены\n")
-			}
-			var matsSum float64
-			for _, it := range items {
-				matID := int64(it["mat_id"].(float64))
-				q := int64(it["qty"].(float64))
-				name := fmt.Sprintf("ID:%d", matID)
-				if m, _ := b.materials.GetByID(ctx, matID); m != nil { // repo уже есть
-					name = materialDisplayName(m.Brand, m.Name)
-				}
-				price, _ := b.materials.GetPrice(ctx, matID)
-				line := float64(q) * price
-				matsSum += line
-				_, _ = fmt.Fprintf(&sb, "• %s — %d × %.2f = %.2f ₽\n", name, q, price, line)
-			}
-
-			// финансы: округлённая сумма материалов, аренда, итого — у нас уже посчитаны
-			if isConsumptionStudioClient(st.Payload) {
-				_, _ = fmt.Fprintf(&sb, "\nМатериалы: %.2f ₽\nАренда: студийный клиент %.2f ₽\nИтого: %.2f ₽",
-					mats, rent, total)
-			} else if noRent {
-				_, _ = fmt.Fprintf(&sb, "\nМатериалы: %.2f ₽\nАренда: без аренды\nИтого: %.2f ₽",
-					mats, total)
-			} else {
-				_, _ = fmt.Fprintf(&sb, "\nМатериалы (факт): %.2f ₽, округл.: %.2f ₽\nАренда: %.2f ₽\nИтого: %.2f ₽",
-					mats, rounded, rent, total)
-			}
-
-			notificationText := sb.String()
-			seen := map[int64]struct{}{}
-			for _, admin := range admins {
-				if admin == nil || admin.TelegramID == 0 {
-					continue
-				}
-				if _, ok := seen[admin.TelegramID]; ok {
-					continue
-				}
-				seen[admin.TelegramID] = struct{}{}
-				b.send(tgbotapi.NewMessage(admin.TelegramID, notificationText))
-			}
-		} else if err != nil {
-			b.log.Error("failed to load admins for consumption notification", "err", err)
-		}
-
-		// сообщение мастеру о завершении расчёта
-		receiptText := b.buildConsumptionReceipt(ctx, st.Payload, "✅ Сессия подтверждена.\n\nЧек:")
-
-		b.editTextAndClear(fromChat, cb.Message.MessageID, receiptText)
-
-		_ = b.states.Set(ctx, fromChat, dialog.StateIdle, dialog.Payload{})
+		b.finalizeConsumption(ctx, fromChat, cb.Message.MessageID, cb.From.ID, cb.From.UserName, st.Payload)
 		_ = b.answerCallback(cb, "Готово", false)
 		return
 
