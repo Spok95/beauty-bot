@@ -1360,7 +1360,7 @@ func (b *Bot) handleStateMessage(ctx context.Context, msg *tgbotapi.Message) {
 
 		kb := tgbotapi.NewInlineKeyboardMarkup(
 			tgbotapi.NewInlineKeyboardRow(
-				tgbotapi.NewInlineKeyboardButtonData("🔎 Продолжить поиск", fmt.Sprintf("mstock:wh:%d", whID)),
+				tgbotapi.NewInlineKeyboardButtonData("🔎 Продолжить поиск", fmt.Sprintf("mstock:byname:%d", whID)),
 			),
 			navKeyboard(false, true).InlineKeyboard[0],
 		)
@@ -4785,7 +4785,7 @@ func (b *Bot) showMasterStockCategoryItemsPage(ctx context.Context, chatID int64
 	if len(items) == 0 {
 		kb := tgbotapi.NewInlineKeyboardMarkup(
 			tgbotapi.NewInlineKeyboardRow(
-				tgbotapi.NewInlineKeyboardButtonData("🔎 Продолжить поиск", fmt.Sprintf("mstock:wh:%d", whID)),
+				tgbotapi.NewInlineKeyboardButtonData("🔎 Продолжить поиск", fmt.Sprintf("mstock:bycat:%d", whID)),
 			),
 			tgbotapi.NewInlineKeyboardRow(
 				tgbotapi.NewInlineKeyboardButtonData("⬅️ К категориям", fmt.Sprintf("mstock:bycat:%d", whID)),
@@ -4855,7 +4855,7 @@ func (b *Bot) showMasterStockCategoryItemsPage(ctx context.Context, chatID int64
 
 	rows = append(rows,
 		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("🔎 Продолжить поиск", fmt.Sprintf("mstock:wh:%d", whID)),
+			tgbotapi.NewInlineKeyboardButtonData("🔎 Продолжить поиск", fmt.Sprintf("mstock:bycat:%d", whID)),
 		),
 	)
 	rows = append(rows,
