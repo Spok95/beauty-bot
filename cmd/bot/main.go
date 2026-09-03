@@ -139,6 +139,9 @@ func main() {
 	}()
 	log.Info("telegram bot started")
 
+	go tg.RunTestPeriodAdminNotices(ctx)
+	log.Info("test period admin notice scheduler started")
+
 	<-ctx.Done()
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
